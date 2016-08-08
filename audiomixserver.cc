@@ -1,6 +1,8 @@
 #include <iostream>
 #include <chrono>
 #include <unordered_map>
+#include <cstdio>
+#include <iomanip>
 
 #include "SDL.h"
 #include "SDL_mixer.h"
@@ -12,52 +14,213 @@
 struct context 
 {
   std::unordered_map<std::string, Mix_Chunk *> chunks;
+  std::unordered_map<std::string, unsigned long> client_tokens;
+  std::vector<Mix_Chunk*> ordered_chunks;
   std::chrono::time_point<std::chrono::system_clock> start = std::chrono::system_clock::now();	
+  boost::program_options::variables_map& vm;
+  struct event udp_event;
+  
+  context(boost::program_options::variables_map& vm_):vm(vm_) {}
+
 
   bool play(std::string const& name) {
     auto p = chunks.find(name);
 
     if (p == chunks.end()) {
+      if (!ordered_chunks.empty() && (name == "/play" || name == "play")) {
+	return play(ordered_chunks[0]);
+      }
+
+      std::cout << "Nothing to play for " << name << std::endl;
       return false;
     }
-    
-    int ret = Mix_PlayChannel(-1, p->second, 0);
+
+    return play(p->second);
+  }
+
+  bool play(Mix_Chunk* chunk) {
+    int ret = Mix_PlayChannel(-1, chunk, 0);
     if (ret < 0) {
-      std::cerr << "Mix_PlayChannel " << ret << " " << p->first << " " << Mix_GetError() << std::endl;
+      std::cerr << "Mix_PlayChannel " << ret << " " << Mix_GetError() << std::endl;
     } else {
       std::chrono::time_point<std::chrono::system_clock> now = std::chrono::system_clock::now();	
-      std::cout << std::chrono::duration_cast<std::chrono::milliseconds>(now-start).count()  << " Playing " << p->first << " on channel " << ret << std::endl;
+      std::cout << std::chrono::duration_cast<std::chrono::milliseconds>(now-start).count()  << " Playing on channel " << ret << std::endl;
     }
 
     return true;
   }
   
-  void handle_request(evhttp_request *req) {
+  void handle_http_request(evhttp_request *req) {
+    char *address;
+    ev_uint16_t port;
+    struct evhttp_connection *con = evhttp_request_get_connection (req);
+    evhttp_connection_get_peer(con, &address, &port);
+    
     auto *out = evhttp_request_get_output_buffer(req);
     if (!out) {
       std::cerr << "evhttp_request_get_output_buffer" << std::endl;
       return;
     }
     auto uri = evhttp_request_get_evhttp_uri(req);
-    auto path = evhttp_uri_get_path(uri);
+    auto path = std::string(evhttp_uri_get_path(uri));
+    std::cout << "Received HTTP request from " << address << ":" << port << " for " << path << std::endl;
 
-    if (std::string("/") == path) {
+    if ("/" == path) {
       for (auto const& p : chunks) {
 	evbuffer_add_printf(out, "<a href=\"%s\">%s</a>\n", p.first.c_str(), p.first.c_str());
       }
+      if (chunks.empty()) {
+	evbuffer_add_printf(out, "No tunes passed on the command line!\n");
+      }
+      
       evhttp_send_reply(req, HTTP_OK, "Pick a tune", out);
       return;
     }	
     
     if (play(path)) {
-      evbuffer_add_printf(out, "<a href=\"%s\">Played</a>", path);
+      evbuffer_add_printf(out, "<a href=\"%s\">Played</a>", path.c_str());
       evhttp_send_reply(req, HTTP_OK, "Mixing madly", out);
       return;
     }
 
     evbuffer_add_printf(out, "Not found. <a href=\"/\">Home beat.</a>\n");
     evhttp_send_reply(req, HTTP_NOTFOUND, "Not a tune", out);
-  } 
+  }
+
+  void handle_udp_events(evutil_socket_t sock) {
+    struct sockaddr_storage addr;
+    char buf[1<<16];
+    for (;;) {
+      socklen_t addr_len = sizeof(addr);
+      auto bytes = recvfrom(sock, buf, sizeof(buf), 0, (struct sockaddr*) &addr, &addr_len);
+      if (bytes < 0) {
+	return;
+      }
+      
+      handle_udp_request(sock, std::string(buf, bytes), &addr, addr_len);
+    }
+  }
+
+  std::string remote_address(const void* addr, int addr_len) {
+    switch(static_cast<const sockaddr*>(addr)->sa_family) {
+    case AF_INET:
+      {
+	char namebuf[INET_ADDRSTRLEN];
+	auto sa = static_cast<const sockaddr_in*>(addr);
+	if (evutil_inet_ntop(AF_INET, &sa->sin_addr,
+			     namebuf, sizeof(namebuf)) < 0) {
+	  std::cerr << "evutil_inet_ntop AF_INET " << evutil_socket_error_to_string(EVUTIL_SOCKET_ERROR()) << std::endl;
+	  return "<UNKNOWN-IPv4>";
+	}
+	
+	return std::string(namebuf) + ":" + std::to_string(ntohs(sa->sin_port));
+      }
+    case AF_INET6:
+      {	
+	char namebuf[INET6_ADDRSTRLEN];
+	auto sa = static_cast<const sockaddr_in6*>(addr);
+	if (evutil_inet_ntop(AF_INET6, &sa->sin6_addr,
+			     namebuf, sizeof(namebuf)) < 0) {
+	  std::cerr << "evutil_inet_ntop AF_INET6 " << evutil_socket_error_to_string(EVUTIL_SOCKET_ERROR()) << std::endl;
+	  return "<UNKNOWN-IPv6>";
+	}
+	
+	return std::string(namebuf)  + ":" + std::to_string(ntohs(sa->sin6_port));
+      }
+    default:
+      return "<UNKNOWN-AF>";
+    }
+  }
+  
+
+  void handle_udp_request(evutil_socket_t sock, const std::string& buf, const void* addr, int addr_len) {
+    std::istringstream in(buf);
+
+    std::string client;
+    std::string client_token;
+    std::string path;
+    std::getline(in, client);
+    std::getline(in, client_token);
+    std::getline(in, path);
+
+    unsigned long client_token_number = std::stoul(client_token);
+
+    auto remote = remote_address(addr, addr_len);
+    std::cout << "Received UDP request from " << remote << " for " << client << " with token " << client_token_number << std::endl;
+    
+    timeval tv;
+    if (evutil_gettimeofday(&tv, nullptr) < 0) {
+      std::cerr << "evutil_gettimeofday " << evutil_socket_error_to_string(EVUTIL_SOCKET_ERROR()) << std::endl;
+      std::memset(&tv, 0, sizeof(tv));
+    }
+
+    std::ostringstream out;
+    out << "audiomixserver/0 TIME " << tv.tv_sec << "." << std::setw(6) << tv.tv_usec << std::endl;
+    if ("ping" == path) {
+      out << "PONG" << std::endl;
+    } else if (client_token_number <= client_tokens[remote]) {
+      out << "PLAYED " << client_tokens[remote] << std::endl;
+    } else if ("reset" == path) {
+      client_tokens[remote] = client_token_number;
+    } else if (play(path)) {
+      client_tokens[remote] = client_token_number;
+      out << "PLAYING" << std::endl;
+    } else {
+      out << "FAILED" << std::endl;
+    }
+    std::string msg = out.str();
+
+    if (sendto(sock, msg.data(), msg.size(), 0, static_cast<const sockaddr*>(addr), addr_len) != ssize_t(msg.size())){
+      std::cerr << "sendto " << evutil_socket_error_to_string(EVUTIL_SOCKET_ERROR()) << std::endl;
+    }
+  }
+
+  bool init_http() {
+    // no cleanup, no need
+    evhttp* ev_web = evhttp_start(vm["bind_address"].as<std::string>().c_str(), vm["bind_port"].as<int>());
+    if (!ev_web) {
+      std::cerr << "evhttp_start " << evutil_socket_error_to_string(EVUTIL_SOCKET_ERROR()) << std::endl;
+      return false;
+    }
+    evhttp_set_gencb(ev_web, [] (evhttp_request *req, void *ptr) -> void {
+	static_cast<context*>(ptr)->handle_http_request(req);
+      }, this );
+    return true;
+  }
+
+  bool init_udp() {
+    // no cleanup, no need
+    auto sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock < 0){
+      std::cerr << "socket: " << EVUTIL_SOCKET_ERROR() << std::endl;
+      return false;
+    }
+    if (evutil_make_socket_nonblocking(sock)) {
+      std::cerr << "evutil_make_socket_nonblocking " << evutil_socket_error_to_string(EVUTIL_SOCKET_ERROR()) << std::endl;
+      return false;
+    }
+    if (evutil_make_listen_socket_reuseable(sock)) {
+      std::cerr << "evutil_make_socket_reuseable " << evutil_socket_error_to_string(EVUTIL_SOCKET_ERROR()) << std::endl;
+      return false;
+    }
+    
+    struct sockaddr_in addr;
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(vm["bind_port_udp"].as<int>());
+    addr.sin_addr.s_addr = INADDR_ANY;
+
+    if (bind(sock, (struct sockaddr *)&addr, sizeof(addr))) {
+      std::cerr << "bind " << evutil_socket_error_to_string(EVUTIL_SOCKET_ERROR()) << std::endl;
+      return false;
+    }
+
+    event_set(&udp_event, sock, EV_READ | EV_PERSIST,  [] (evutil_socket_t sock, short what, void *ctx) -> void {
+	static_cast<context*>(ctx)->handle_udp_events(sock);
+      }, this);
+    event_add(&udp_event, NULL);
+    
+    return true;
+  }
 };
 
 int main(int argc, char*argv[]) {
@@ -70,8 +233,9 @@ int main(int argc, char*argv[]) {
     ("chunksize", po::value<int>()->default_value(512), "Bytes sent to sound output each time, divide by frequency to find duration")
     ("sample-files", po::value<std::vector<std::string>>(), "OGG, WAV or MP3 sample files")
     ("allocate_sdl_channels", po::value<int>()->default_value(2048), "Number of SDL channels to mix together")
-    ("bind_address", po::value<std::string>()->default_value("0.0.0.0"), "Address to listen on")
-    ("bind_port", po::value<int>()->default_value(13231), "Port to listen on")
+    ("bind_address", po::value<std::string>()->default_value("0.0.0.0"), "Address to listen on for HTTP")
+    ("bind_port", po::value<int>()->default_value(13231), "Port to listen on for HTTP")
+    ("bind_port_udp", po::value<int>()->default_value(13231), "Port to listen on for UDP")    
     ;
   po::variables_map vm;
   po::positional_options_description p;
@@ -102,12 +266,19 @@ int main(int argc, char*argv[]) {
 
   Mix_AllocateChannels(vm["allocate_sdl_channels"].as<int>());
 
-  context ctx;
+  context ctx(vm);
   
   if(vm.count("sample-files")){
     for (auto& file : vm["sample-files"].as<std::vector<std::string>>()) {
         std::cout << "Loading " << file << std::endl;
-	ctx.chunks[file] = Mix_LoadWAV(file.c_str());
+	auto chunk = Mix_LoadWAV(file.c_str());
+	if (!chunk){
+	  std::cerr << "Could not load " << file << ": " << Mix_GetError() << std::endl;
+	  continue;
+	}
+	
+	ctx.chunks[file] = chunk;
+	ctx.ordered_chunks.push_back(chunk);
     }
   }
 
@@ -116,15 +287,13 @@ int main(int argc, char*argv[]) {
     return 5;
   }
 
-
-  std::unique_ptr<evhttp, decltype(&evhttp_free)> ev_web(evhttp_start(vm["bind_address"].as<std::string>().c_str(), vm["bind_port"].as<int>()), &evhttp_free);
-  if (!ev_web) {
-    std::cerr << "evhttp_start" << std::endl;
-    return 6;
+  if (!ctx.init_udp()) {
+    std::cerr << "init_udp" << std::endl;
   }
-  evhttp_set_gencb(ev_web.get(), [] (evhttp_request *req, void *ptr) -> void {
-      static_cast<context*>(ptr)->handle_request(req);
-    }, &ctx );
+  if (!ctx.init_http()){
+    std::cerr <<"init_http" << std::endl;
+  }
+  
   if (event_dispatch() == -1) {
     std::cerr << "event_dispatch" << std::endl;
     return 7;
