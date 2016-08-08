@@ -30,3 +30,18 @@ Mix audio:
 - ./audiomixserver /usr/share/sounds/ubuntu/stereo/button-*
 
 - visit localhost:13231/
+
+Mac OSX
+
+- If you don't have homebrew, install it: http://brew.sh/
+
+- brew install sdl2
+- brew install boost
+- brew install libevent
+
+- make
+
+- ./audiomixserver /[path to directory where you're storing the sounds]/*
+
+- visit localhost:13231/
+
