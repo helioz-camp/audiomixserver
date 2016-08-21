@@ -3,6 +3,7 @@
 #include <unordered_map>
 #include <cstdio>
 #include <iomanip>
+#include <random>
 
 #include "SDL.h"
 #include "SDL_mixer.h"
@@ -11,224 +12,325 @@
 
 #include "evhttp.h"
 
-struct context 
+namespace 
 {
-  std::unordered_map<std::string, Mix_Chunk *> chunks;
-  std::unordered_map<std::string, unsigned long> client_tokens;
-  std::vector<Mix_Chunk*> ordered_chunks;
-  std::chrono::time_point<std::chrono::system_clock> start = std::chrono::system_clock::now();	
-  boost::program_options::variables_map& vm;
-  struct event udp_event;
+  typedef unsigned long sequence_t;
   
-  context(boost::program_options::variables_map& vm_):vm(vm_) {}
-
-
-  bool play(std::string const& name) {
-    auto p = chunks.find(name);
-
-    if (p == chunks.end()) {
-      if (!ordered_chunks.empty() && (name == "/play" || name == "play")) {
-	return play(ordered_chunks[0]);
-      }
-
-      std::cout << "Nothing to play for " << name << std::endl;
-      return false;
-    }
-
-    return play(p->second);
+  std::chrono::time_point<std::chrono::system_clock> start = std::chrono::system_clock::now();
+  long time_millis() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now()-start).count();
   }
-
-  bool play(Mix_Chunk* chunk) {
-    int ret = Mix_PlayChannel(-1, chunk, 0);
-    if (ret < 0) {
-      std::cerr << "Mix_PlayChannel " << ret << " " << Mix_GetError() << std::endl;
-    } else {
-      std::chrono::time_point<std::chrono::system_clock> now = std::chrono::system_clock::now();	
-      std::cout << std::chrono::duration_cast<std::chrono::milliseconds>(now-start).count()  << " Playing on channel " << ret << std::endl;
-    }
-
-    return true;
+  sequence_t random_sequence_number() 
+  {
+    static auto rnd = std::mt19937(std::random_device()());
+    static std::uniform_int_distribution<sequence_t> dist;
+    return dist(rnd);
   }
   
-  void handle_http_request(evhttp_request *req) {
-    char *address;
-    ev_uint16_t port;
-    struct evhttp_connection *con = evhttp_request_get_connection (req);
-    evhttp_connection_get_peer(con, &address, &port);
-    
-    auto *out = evhttp_request_get_output_buffer(req);
-    if (!out) {
-      std::cerr << "evhttp_request_get_output_buffer" << std::endl;
-      return;
+
+  struct lock_sdl_audio 
+  {
+    lock_sdl_audio() 
+    {
+      SDL_LockAudio();
     }
-    auto uri = evhttp_request_get_evhttp_uri(req);
-    auto path = std::string(evhttp_uri_get_path(uri));
-    std::cout << "Received HTTP request from " << address << ":" << port << " for " << path << std::endl;
+    ~lock_sdl_audio() 
+    {
+      SDL_UnlockAudio();      
+    }
+  };
+  
 
-    if ("/" == path) {
-      for (auto const& p : chunks) {
-	evbuffer_add_printf(out, "<a href=\"%s\">%s</a>\n", p.first.c_str(), p.first.c_str());
+  struct context 
+  {
+    std::unordered_map<std::string, Mix_Chunk *> chunks;
+    std::unordered_map<std::string, unsigned long> client_tokens;
+    std::vector<Mix_Chunk*> ordered_chunks;
+    boost::program_options::variables_map& vm;
+    struct event udp_event;
+
+    std::unordered_map<int, sequence_t> channel_to_sequence;
+    std::unordered_map<sequence_t, int> sequence_to_channel;
+    std::unordered_map<sequence_t, Mix_Chunk*> sequence_to_next_chunk;
+    sequence_t sequence = random_sequence_number();
+  
+    context(boost::program_options::variables_map& vm_):vm(vm_) {}
+
+    sequence_t play(std::string const& name) {
+      auto p = chunks.find(name);
+
+      if (ordered_chunks.empty()) {
+	std::cout << "No songs loaded - pass them at the command line" << std::endl;
+	return 0;
       }
-      if (chunks.empty()) {
-	evbuffer_add_printf(out, "No tunes passed on the command line!\n");
-      }
-      
-      evhttp_send_reply(req, HTTP_OK, "Pick a tune", out);
-      return;
-    }	
     
-    if (play(path)) {
-      evbuffer_add_printf(out, "<a href=\"%s\">Played</a>", path.c_str());
-      evhttp_send_reply(req, HTTP_OK, "Mixing madly", out);
-      return;
+    
+      if (p == chunks.end()) {
+	if (name == "play" || name.empty()) {
+	  return play(ordered_chunks[0]);
+	}
+
+	unsigned long index;
+	try {
+	  index = std::stoul(name);
+	} catch (std::exception& e) {
+	  std::cout << "Unknown song " << name << std::endl;
+	  return 0;
+	}
+
+	return play(ordered_chunks[index%ordered_chunks.size()]);
+      }
+
+      return play(p->second);
     }
 
-    evbuffer_add_printf(out, "Not found. <a href=\"/\">Home beat.</a>\n");
-    evhttp_send_reply(req, HTTP_NOTFOUND, "Not a tune", out);
-  }
+    sequence_t play(Mix_Chunk* chunk) {
+      int ret = Mix_PlayChannel(-1, chunk, 0);
+      if (ret < 0) {
+	std::cerr << "Mix_PlayChannel " << ret << " " << Mix_GetError() << std::endl;
+	return 0;
+      } else {
+	std::cout << time_millis()  << " playing on channel " << ret << std::endl;
+      }
+    
+      auto current_sequence =  ++sequence;
+      if (0 == sequence) {
+	current_sequence = ++sequence;
+      }
 
-  void handle_udp_events(evutil_socket_t sock) {
-    struct sockaddr_storage addr;
-    char buf[1<<16];
-    for (;;) {
-      socklen_t addr_len = sizeof(addr);
-      auto bytes = recvfrom(sock, buf, sizeof(buf), 0, (struct sockaddr*) &addr, &addr_len);
-      if (bytes < 0) {
+      {
+	lock_sdl_audio _;
+	channel_to_sequence[ret] = current_sequence;
+	sequence_to_channel[current_sequence] = ret;
+      }
+    
+      return current_sequence;
+    }
+  
+    void handle_http_request(evhttp_request *req) {
+      char *address;
+      ev_uint16_t port;
+      struct evhttp_connection *con = evhttp_request_get_connection (req);
+      evhttp_connection_get_peer(con, &address, &port);
+    
+      auto *out = evhttp_request_get_output_buffer(req);
+      if (!out) {
+	std::cerr << "evhttp_request_get_output_buffer" << std::endl;
 	return;
       }
+      auto uri = evhttp_request_get_evhttp_uri(req);
+      auto path = std::string(evhttp_uri_get_path(uri));
+      std::cout << "Received HTTP request from " << address << ":" << port << " for " << path << std::endl;
+
+      if ("/" == path) {
+	for (auto const& p : chunks) {
+	  evbuffer_add_printf(out, "<a href=\"%s\">%s</a>\n", p.first.c_str(), p.first.c_str());
+	}
+	if (chunks.empty()) {
+	  evbuffer_add_printf(out, "No tunes passed on the command line!\n");
+	}
       
-      handle_udp_request(sock, std::string(buf, bytes), &addr, addr_len);
-    }
-  }
-
-  std::string remote_address(const void* addr, int addr_len) {
-    switch(static_cast<const sockaddr*>(addr)->sa_family) {
-    case AF_INET:
-      {
-	char namebuf[INET_ADDRSTRLEN];
-	auto sa = static_cast<const sockaddr_in*>(addr);
-	if (evutil_inet_ntop(AF_INET, &sa->sin_addr,
-			     namebuf, sizeof(namebuf)) < 0) {
-	  std::cerr << "evutil_inet_ntop AF_INET " << evutil_socket_error_to_string(EVUTIL_SOCKET_ERROR()) << std::endl;
-	  return "<UNKNOWN-IPv4>";
-	}
-	
-	return std::string(namebuf) + ":" + std::to_string(ntohs(sa->sin_port));
+	evhttp_send_reply(req, HTTP_OK, "Pick a tune", out);
+	return;
+      }	
+    
+      if (auto sequence = play(path)) {
+	evbuffer_add_printf(out, "<a href=\"%s\">Played sequence %lu</a>", path.c_str(), (unsigned long)sequence);
+	evhttp_send_reply(req, HTTP_OK, "Mixing madly", out);
+	return;
       }
-    case AF_INET6:
-      {	
-	char namebuf[INET6_ADDRSTRLEN];
-	auto sa = static_cast<const sockaddr_in6*>(addr);
-	if (evutil_inet_ntop(AF_INET6, &sa->sin6_addr,
-			     namebuf, sizeof(namebuf)) < 0) {
-	  std::cerr << "evutil_inet_ntop AF_INET6 " << evutil_socket_error_to_string(EVUTIL_SOCKET_ERROR()) << std::endl;
-	  return "<UNKNOWN-IPv6>";
+
+      evbuffer_add_printf(out, "Not found. <a href=\"/\">Home beat.</a>\n");
+      evhttp_send_reply(req, HTTP_NOTFOUND, "Not a tune", out);
+    }
+
+    void handle_udp_events(evutil_socket_t sock) {
+      struct sockaddr_storage addr;
+      char buf[1<<16];
+      for (;;) {
+	socklen_t addr_len = sizeof(addr);
+	auto bytes = recvfrom(sock, buf, sizeof(buf), 0, (struct sockaddr*) &addr, &addr_len);
+	if (bytes < 0) {
+	  return;
 	}
-	
-	return std::string(namebuf)  + ":" + std::to_string(ntohs(sa->sin6_port));
+      
+	handle_udp_request(sock, std::string(buf, bytes), &addr, addr_len);
       }
-    default:
-      return "<UNKNOWN-AF>";
     }
-  }
-  
 
-  void handle_udp_request(evutil_socket_t sock, const std::string& buf, const void* addr, int addr_len) {
-    std::istringstream in(buf);
+    std::string remote_address(const void* addr, int addr_len) {
+      switch(static_cast<const sockaddr*>(addr)->sa_family) {
+      case AF_INET:
+	{
+	  char namebuf[INET_ADDRSTRLEN];
+	  auto sa = static_cast<const sockaddr_in*>(addr);
+	  if (evutil_inet_ntop(AF_INET, &sa->sin_addr,
+			       namebuf, sizeof(namebuf)) < 0) {
+	    std::cerr << "evutil_inet_ntop AF_INET " << evutil_socket_error_to_string(EVUTIL_SOCKET_ERROR()) << std::endl;
+	    return "<UNKNOWN-IPv4>";
+	  }
+	
+	  return std::string(namebuf) + ":" + std::to_string(ntohs(sa->sin_port));
+	}
+      case AF_INET6:
+	{	
+	  char namebuf[INET6_ADDRSTRLEN];
+	  auto sa = static_cast<const sockaddr_in6*>(addr);
+	  if (evutil_inet_ntop(AF_INET6, &sa->sin6_addr,
+			       namebuf, sizeof(namebuf)) < 0) {
+	    std::cerr << "evutil_inet_ntop AF_INET6 " << evutil_socket_error_to_string(EVUTIL_SOCKET_ERROR()) << std::endl;
+	    return "<UNKNOWN-IPv6>";
+	  }
+	
+	  return std::string(namebuf)  + ":" + std::to_string(ntohs(sa->sin6_port));
+	}
+      default:
+	return "<UNKNOWN-AF>";
+      }
+    }
 
-    std::string client;
-    std::string client_token;
-    std::string path;
-    std::getline(in, client);
-    std::getline(in, client_token);
-    std::getline(in, path);
+    void handle_request(std::ostream& out, std::string const& cmd, std::string const& path) {
+      timeval tv;
+      if (evutil_gettimeofday(&tv, nullptr) < 0) {
+	std::cerr << "evutil_gettimeofday " << evutil_socket_error_to_string(EVUTIL_SOCKET_ERROR()) << std::endl;
+	std::memset(&tv, 0, sizeof(tv));
+      }
+      out << "TIME " << tv.tv_sec << "." << std::setw(6) << tv.tv_usec << std::endl;
+      if ("ping" == cmd || "reset" == cmd) {
+	out << "PONG" << std::endl
+	    << path << std::endl;
+      } else if ("stop" == cmd) {
+	sequence_t sequence;
+	try {
+	  sequence = std::stoul(path);
+	} catch (std::exception& e) {
+	  std::cerr << "Parse failed for stop " << path << ": " << e.what() << std::endl;
+	  out << "PARSE FAILED " << path << std::endl;
+	  return;
+	}
 
-    unsigned long client_token_number = std::stoul(client_token);
+	{
+	  lock_sdl_audio _;
+	  auto i = sequence_to_channel.find(sequence);
+	  if (i != sequence_to_channel.end()) {
+	    Mix_HaltChannel(i->second);
+	  }
+	}
+	out << "STOPPED" << std::endl;
+      } else if ("play" == cmd || path.empty()) {
+	if (auto sequence = play("play" == cmd ? path : cmd)) {
+	  out << "PLAYING SEQUENCE " << sequence << std::endl;
+	} else {
+	  out << "FAILED" << std::endl;
+	}
+      } else {
+	out << "UNKNOWN" << std::endl;
+      }
+    }
 
-    auto remote = remote_address(addr, addr_len);
-    std::cout << "Received UDP request from " << remote << " for " << client << " with token " << client_token_number << std::endl;
+    void handle_udp_request(evutil_socket_t sock, const std::string& buf, const void* addr, int addr_len) {
+      std::istringstream in(buf);
+
+      std::string client;
+      std::string client_token;
+      std::string cmd;
+      std::string path;
+      std::getline(in, client);
+      std::getline(in, client_token);
+      std::getline(in, cmd);
+      std::getline(in, path);
+
+      std::ostringstream out;
+
+      unsigned long client_token_number = std::stoul(client_token);
+
+      auto remote = remote_address(addr, addr_len);
+      std::cout << "Received UDP request from " << remote << " for " << client << " with token " << client_token_number << std::endl;
+
+      out << "audiomixserver/1" << std::endl
+	  << "TOKEN " << client_tokens[remote] << std::endl;
     
-    timeval tv;
-    if (evutil_gettimeofday(&tv, nullptr) < 0) {
-      std::cerr << "evutil_gettimeofday " << evutil_socket_error_to_string(EVUTIL_SOCKET_ERROR()) << std::endl;
-      std::memset(&tv, 0, sizeof(tv));
+      if (client_tokens[remote] >= client_token_number && cmd != "reset"){
+	out << "ALREADY AT TOKEN " << client_tokens[remote] << std::endl;
+      } else {
+	client_tokens[remote] = client_token_number;
+	handle_request(out, cmd, path);
+      }
+
+      auto msg = out.str();
+
+      if (sendto(sock, msg.data(), msg.size(), 0, static_cast<const sockaddr*>(addr), addr_len) != ssize_t(msg.size())){
+	std::cerr << "sendto " << evutil_socket_error_to_string(EVUTIL_SOCKET_ERROR()) << std::endl;
+      }
     }
 
-    std::ostringstream out;
-    out << "audiomixserver/0 TIME " << tv.tv_sec << "." << std::setw(6) << tv.tv_usec << std::endl;
-    if ("ping" == path) {
-      out << "PONG" << std::endl;
-    } else if (client_token_number <= client_tokens[remote]) {
-      out << "PLAYED " << client_tokens[remote] << std::endl;
-    } else if ("reset" == path) {
-      client_tokens[remote] = client_token_number;
-    } else if (play(path)) {
-      client_tokens[remote] = client_token_number;
-      out << "PLAYING" << std::endl;
-    } else {
-      out << "FAILED" << std::endl;
+    bool init_http() {
+      // no cleanup, no need
+      evhttp* ev_web = evhttp_start(vm["bind_address"].as<std::string>().c_str(), vm["bind_port"].as<int>());
+      if (!ev_web) {
+	std::cerr << "evhttp_start " << evutil_socket_error_to_string(EVUTIL_SOCKET_ERROR()) << std::endl;
+	return false;
+      }
+      evhttp_set_gencb(ev_web, [] (evhttp_request *req, void *ptr) -> void {
+	  static_cast<context*>(ptr)->handle_http_request(req);
+	}, this );
+      return true;
     }
-    std::string msg = out.str();
 
-    if (sendto(sock, msg.data(), msg.size(), 0, static_cast<const sockaddr*>(addr), addr_len) != ssize_t(msg.size())){
-      std::cerr << "sendto " << evutil_socket_error_to_string(EVUTIL_SOCKET_ERROR()) << std::endl;
-    }
-  }
-
-  bool init_http() {
-    // no cleanup, no need
-    evhttp* ev_web = evhttp_start(vm["bind_address"].as<std::string>().c_str(), vm["bind_port"].as<int>());
-    if (!ev_web) {
-      std::cerr << "evhttp_start " << evutil_socket_error_to_string(EVUTIL_SOCKET_ERROR()) << std::endl;
-      return false;
-    }
-    evhttp_set_gencb(ev_web, [] (evhttp_request *req, void *ptr) -> void {
-	static_cast<context*>(ptr)->handle_http_request(req);
-      }, this );
-    return true;
-  }
-
-  bool init_udp() {
-    // no cleanup, no need
-    auto sock = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sock < 0){
-      std::cerr << "socket: " << EVUTIL_SOCKET_ERROR() << std::endl;
-      return false;
-    }
-    if (evutil_make_socket_nonblocking(sock)) {
-      std::cerr << "evutil_make_socket_nonblocking " << evutil_socket_error_to_string(EVUTIL_SOCKET_ERROR()) << std::endl;
-      return false;
-    }
-    if (evutil_make_listen_socket_reuseable(sock)) {
-      std::cerr << "evutil_make_socket_reuseable " << evutil_socket_error_to_string(EVUTIL_SOCKET_ERROR()) << std::endl;
-      return false;
-    }
+    bool init_udp() {
+      // no cleanup, no need
+      auto sock = socket(AF_INET, SOCK_DGRAM, 0);
+      if (sock < 0){
+	std::cerr << "socket: " << EVUTIL_SOCKET_ERROR() << std::endl;
+	return false;
+      }
+      if (evutil_make_socket_nonblocking(sock)) {
+	std::cerr << "evutil_make_socket_nonblocking " << evutil_socket_error_to_string(EVUTIL_SOCKET_ERROR()) << std::endl;
+	return false;
+      }
+      if (evutil_make_listen_socket_reuseable(sock)) {
+	std::cerr << "evutil_make_socket_reuseable " << evutil_socket_error_to_string(EVUTIL_SOCKET_ERROR()) << std::endl;
+	return false;
+      }
     
-    struct sockaddr_in addr;
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(vm["bind_port_udp"].as<int>());
-    addr.sin_addr.s_addr = INADDR_ANY;
+      struct sockaddr_in addr;
+      addr.sin_family = AF_INET;
+      addr.sin_port = htons(vm["bind_port_udp"].as<int>());
+      addr.sin_addr.s_addr = INADDR_ANY;
 
-    if (bind(sock, (struct sockaddr *)&addr, sizeof(addr))) {
-      std::cerr << "bind " << evutil_socket_error_to_string(EVUTIL_SOCKET_ERROR()) << std::endl;
-      return false;
-    }
+      if (bind(sock, (struct sockaddr *)&addr, sizeof(addr))) {
+	std::cerr << "bind " << evutil_socket_error_to_string(EVUTIL_SOCKET_ERROR()) << std::endl;
+	return false;
+      }
 
-    event_set(&udp_event, sock, EV_READ | EV_PERSIST,  [] (evutil_socket_t sock, short what, void *ctx) -> void {
-	static_cast<context*>(ctx)->handle_udp_events(sock);
-      }, this);
-    event_add(&udp_event, NULL);
+      event_set(&udp_event, sock, EV_READ | EV_PERSIST,  [] (evutil_socket_t sock, short what, void *ctx) -> void {
+	  static_cast<context*>(ctx)->handle_udp_events(sock);
+	}, this);
+      event_add(&udp_event, NULL);
     
-    return true;
+      return true;
+    }
+  };
+
+  context* global_ctx;
+
+  void finished_channel(int channel) {
+    auto sequence = global_ctx->channel_to_sequence[channel];
+    std::cout << time_millis() << " finished playing " << sequence << " on channel " << channel << std::endl;
+
+    global_ctx->sequence_to_channel.erase(sequence);
+    global_ctx->channel_to_sequence.erase(channel);
   }
-};
+}
+
+
 
 int main(int argc, char*argv[]) {
   namespace po = boost::program_options;
   po::options_description description("Mix audio");
   description.add_options()
     ("help", "Display this help message")
-    ("frequency", po::value<int>()->default_value(48000), "Frequency in Hz")
+    ("frequency", po::value<int>()->default_value(44100), "Frequency in Hz")
     ("channels", po::value<int>()->default_value(2), "Channels")
     ("chunksize", po::value<int>()->default_value(512), "Bytes sent to sound output each time, divide by frequency to find duration")
     ("sample-files", po::value<std::vector<std::string>>(), "OGG, WAV or MP3 sample files")
@@ -262,23 +364,25 @@ int main(int argc, char*argv[]) {
     return 3;
   }
 
-  
-
   Mix_AllocateChannels(vm["allocate_sdl_channels"].as<int>());
 
+
   context ctx(vm);
+  global_ctx = &ctx; // as finished_channel needs a global
+  Mix_ChannelFinished(finished_channel);
+
   
   if(vm.count("sample-files")){
     for (auto& file : vm["sample-files"].as<std::vector<std::string>>()) {
-        std::cout << "Loading " << file << std::endl;
-	auto chunk = Mix_LoadWAV(file.c_str());
-	if (!chunk){
-	  std::cerr << "Could not load " << file << ": " << Mix_GetError() << std::endl;
-	  continue;
-	}
+      std::cout << "Loading " << file << std::endl;
+      auto chunk = Mix_LoadWAV(file.c_str());
+      if (!chunk){
+	std::cerr << "Could not load " << file << ": " << Mix_GetError() << std::endl;
+	continue;
+      }
 	
-	ctx.chunks[file] = chunk;
-	ctx.ordered_chunks.push_back(chunk);
+      ctx.chunks[file] = chunk;
+      ctx.ordered_chunks.push_back(chunk);
     }
   }
 
