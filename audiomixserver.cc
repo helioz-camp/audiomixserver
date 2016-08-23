@@ -10,11 +10,49 @@
 
 #include "boost/program_options.hpp"
 
-#include "evhttp.h"
+#include "event2/http.h"
+#include "event2/keyvalq_struct.h"
+#include "event2/event.h"
+#include "event2/buffer.h"
+#include "event2/event_struct.h"
+#include "event2/event_compat.h"
+#include "event2/http_compat.h"
 
 namespace 
 {
   typedef unsigned long sequence_t;
+
+  struct sequence_status 
+  {
+    Mix_Chunk* sequence_chunk;
+    int sequence_channel;
+    sequence_t next_sequence;
+
+    sequence_status(Mix_Chunk* chunk):sequence_chunk(chunk),sequence_channel(-1),next_sequence(0)
+    {
+    }
+  };
+
+  std::unordered_map<std::string, std::string> uri_params(evhttp_uri const* uri) {
+      struct evkeyvalq params;
+      std::unordered_map<std::string, std::string> ret;
+
+      if (evhttp_parse_query_str(evhttp_uri_get_query(uri), &params)) {
+	return ret;
+      }
+      for (auto kv = params.tqh_first; kv; kv = kv->next.tqe_next) {
+	if (kv->key) {
+	  ret[kv->key] = kv->value;
+	}
+      }
+      
+
+      evhttp_clear_headers(&params);
+      
+      return ret;
+  }
+  
+
   
   std::chrono::time_point<std::chrono::system_clock> start = std::chrono::system_clock::now();
   long time_millis() {
@@ -22,11 +60,14 @@ namespace
   }
   sequence_t random_sequence_number() 
   {
-    static auto rnd = std::mt19937(std::random_device()());
+    static auto rnd = std::mt19937();//std::random_device()());
     static std::uniform_int_distribution<sequence_t> dist;
     return dist(rnd);
   }
-  
+
+  bool starts_with(std::string const& prefix, std::string const& str) {
+    return str.compare(0, prefix.size(), prefix) == 0;
+  }
 
   struct lock_sdl_audio 
   {
@@ -50,61 +91,70 @@ namespace
     struct event udp_event;
 
     std::unordered_map<int, sequence_t> channel_to_sequence;
-    std::unordered_map<sequence_t, int> sequence_to_channel;
-    std::unordered_map<sequence_t, Mix_Chunk*> sequence_to_next_chunk;
+    std::unordered_map<sequence_t, sequence_status> sequence_to_status;
     sequence_t sequence = random_sequence_number();
   
     context(boost::program_options::variables_map& vm_):vm(vm_) {}
 
-    sequence_t play(std::string const& name) {
+    Mix_Chunk* name_to_chunk(std::string const& name) {
       auto p = chunks.find(name);
 
       if (ordered_chunks.empty()) {
 	std::cout << "No songs loaded - pass them at the command line" << std::endl;
 	return 0;
       }
-    
-    
-      if (p == chunks.end()) {
-	if (name == "play" || name.empty()) {
-	  return play(ordered_chunks[0]);
-	}
-
-	unsigned long index;
-	try {
-	  index = std::stoul(name);
-	} catch (std::exception& e) {
-	  std::cout << "Unknown song " << name << std::endl;
-	  return 0;
-	}
-
-	return play(ordered_chunks[index%ordered_chunks.size()]);
+      if (p != chunks.end()) {
+	return p->second;
       }
 
-      return play(p->second);
+      if (name == "play" || name == "/play" || name.empty()) {
+	return ordered_chunks[0];
+      }
+
+      unsigned long index;
+      try {
+	index = std::stoul(name);
+      } catch (std::exception& e) {
+	std::cout << "Unknown song " << name << std::endl;
+	return 0;
+      }
+      return ordered_chunks[index%ordered_chunks.size()];
+    }
+    
+    sequence_t play(std::string const& name) {
+      auto chunk = name_to_chunk(name);
+      if (!chunk) {
+	return 0;
+      }
+      return play(chunk);
+    }
+
+    sequence_t fresh_sequence_number() {
+      auto new_sequence =  ++sequence;
+      if (0 == sequence) {
+	new_sequence = ++sequence;
+      }
+      return new_sequence;
     }
 
     sequence_t play(Mix_Chunk* chunk) {
-      int ret = Mix_PlayChannel(-1, chunk, 0);
-      if (ret < 0) {
-	std::cerr << "Mix_PlayChannel " << ret << " " << Mix_GetError() << std::endl;
+      lock_sdl_audio _;
+      auto i = sequence_to_status.emplace(fresh_sequence_number(),  sequence_status{chunk});
+      return start_sequence(i.first);
+    }
+
+    sequence_t start_sequence(decltype(sequence_to_status)::iterator& i) {
+      int channel = Mix_PlayChannel(-1, i->second.sequence_chunk, 0);
+      if (channel < 0) {
+	std::cerr << "Mix_PlayChannel " << channel << " " << Mix_GetError() << " for sequence " << i->first << std::endl;
+	sequence_done(i->first);
 	return 0;
       } else {
-	std::cout << time_millis()  << " playing on channel " << ret << std::endl;
+	std::cout << time_millis()  << " playing " << i->first << " on channel " << channel << std::endl;
       }
-    
-      auto current_sequence =  ++sequence;
-      if (0 == sequence) {
-	current_sequence = ++sequence;
-      }
-
-      {
-	lock_sdl_audio _;
-	channel_to_sequence[ret] = current_sequence;
-	sequence_to_channel[current_sequence] = ret;
-      }
-    
-      return current_sequence;
+      channel_to_sequence[channel] = i->first;
+      i->second.sequence_channel = channel;
+      return i->first;
     }
   
     void handle_http_request(evhttp_request *req) {
@@ -113,35 +163,26 @@ namespace
       struct evhttp_connection *con = evhttp_request_get_connection (req);
       evhttp_connection_get_peer(con, &address, &port);
     
-      auto *out = evhttp_request_get_output_buffer(req);
-      if (!out) {
+      auto uri = evhttp_request_get_evhttp_uri(req);
+      
+      auto path = std::string(evhttp_uri_get_path(uri));
+      std::cout << "Received HTTP request from " << address << ":" << port << " for " << path << std::endl;
+      std::ostringstream out;
+
+      bool success = handle_request(out, uri);
+
+      auto *buf = evhttp_request_get_output_buffer(req);
+      if (!buf) {
 	std::cerr << "evhttp_request_get_output_buffer" << std::endl;
 	return;
       }
-      auto uri = evhttp_request_get_evhttp_uri(req);
-      auto path = std::string(evhttp_uri_get_path(uri));
-      std::cout << "Received HTTP request from " << address << ":" << port << " for " << path << std::endl;
-
-      if ("/" == path) {
-	for (auto const& p : chunks) {
-	  evbuffer_add_printf(out, "<a href=\"%s\">%s</a>\n", p.first.c_str(), p.first.c_str());
-	}
-	if (chunks.empty()) {
-	  evbuffer_add_printf(out, "No tunes passed on the command line!\n");
-	}
-      
-	evhttp_send_reply(req, HTTP_OK, "Pick a tune", out);
-	return;
-      }	
-    
-      if (auto sequence = play(path)) {
-	evbuffer_add_printf(out, "<a href=\"%s\">Played sequence %lu</a>", path.c_str(), (unsigned long)sequence);
-	evhttp_send_reply(req, HTTP_OK, "Mixing madly", out);
+      auto str = out.str();
+      if (evbuffer_add(buf, str.data(), str.length())) {
+	std::cerr << "evbuffer_add" << std::endl;
 	return;
       }
-
-      evbuffer_add_printf(out, "Not found. <a href=\"/\">Home beat.</a>\n");
-      evhttp_send_reply(req, HTTP_NOTFOUND, "Not a tune", out);
+      
+      evhttp_send_reply(req, success ? HTTP_OK : 500, "Rock on", buf);
     }
 
     void handle_udp_events(evutil_socket_t sock) {
@@ -189,42 +230,95 @@ namespace
       }
     }
 
-    void handle_request(std::ostream& out, std::string const& cmd, std::string const& path) {
+    bool handle_request(std::ostream& out, evhttp_uri const* uri) {
       timeval tv;
       if (evutil_gettimeofday(&tv, nullptr) < 0) {
 	std::cerr << "evutil_gettimeofday " << evutil_socket_error_to_string(EVUTIL_SOCKET_ERROR()) << std::endl;
 	std::memset(&tv, 0, sizeof(tv));
       }
-      out << "TIME " << tv.tv_sec << "." << std::setw(6) << tv.tv_usec << std::endl;
+      
+      auto path = evhttp_uri_get_path(uri);
+      while (path && *path == '/') ++path;
+      auto cmd = std::string(path);
+      auto params = uri_params(uri);
+      auto get_sequence = [&]() -> sequence_t 
+	{
+	  try {
+	    return std::stoul(params["sequence"]);
+	  } catch (std::exception& e) {
+	    std::cerr << "Parse failed for " << path << ": " << e.what() << std::endl;
+	    out << "NO SEQUENCE " << path << std::endl;
+	    return 0;
+	  }
+	};
+      
+      out << "TIME " << tv.tv_sec << "." << std::setw(5) << std::setfill('0') << tv.tv_usec << std::endl;
       if ("ping" == cmd || "reset" == cmd) {
 	out << "PONG" << std::endl
-	    << path << std::endl;
+	    << params["payload"] << std::endl;
+	return true;
       } else if ("stop" == cmd) {
-	sequence_t sequence;
-	try {
-	  sequence = std::stoul(path);
-	} catch (std::exception& e) {
-	  std::cerr << "Parse failed for stop " << path << ": " << e.what() << std::endl;
-	  out << "PARSE FAILED " << path << std::endl;
-	  return;
-	}
-
+	auto sequence = get_sequence();
 	{
 	  lock_sdl_audio _;
-	  auto i = sequence_to_channel.find(sequence);
-	  if (i != sequence_to_channel.end()) {
-	    Mix_HaltChannel(i->second);
+	  auto i = sequence_to_status.find(sequence);
+	  if (i != sequence_to_status.end()) {
+	    if (i->second.sequence_channel < 0) {
+	      if (i->second.next_sequence) {
+		std::cerr << "Unplayed sequence " << i->first << " has next sequence " << i->second.next_sequence << std::endl;
+	      }
+		  
+	      sequence_to_status.erase(i);
+	    } else {
+	      Mix_HaltChannel(i->second.sequence_channel);
+	    }
 	  }
 	}
 	out << "STOPPED" << std::endl;
-      } else if ("play" == cmd || path.empty()) {
-	if (auto sequence = play("play" == cmd ? path : cmd)) {
-	  out << "PLAYING SEQUENCE " << sequence << std::endl;
+	return true;
+      } else if ("queue" == cmd) {
+	auto sequence = get_sequence();
+	if (!sequence) {
+	  return false;
+	}
+	auto chunk = name_to_chunk(params["sample"]);
+	if (!chunk) {
+	  out << "NO SAMPLE" << std::endl;
+	  return false;
+	}
+
+	sequence_t seq = 0;
+	{
+	  lock_sdl_audio _;
+	  auto i = sequence_to_status.find(sequence);
+	  if (i != sequence_to_status.end()) {
+	    sequence_done(i->second.next_sequence);
+	    i->second.next_sequence = seq =  fresh_sequence_number();
+	    sequence_to_status.emplace(seq,  sequence_status{chunk});
+	  }
+	}
+	if (seq) {
+	  out << "QUEUED " << seq << std::endl;
+	  return true;
+	} else if (auto s = play(chunk)) {
+	  out << "PLAYING " << s << std::endl;
+	  return true;
 	} else {
 	  out << "FAILED" << std::endl;
+	  return false;
 	}
       } else {
-	out << "UNKNOWN" << std::endl;
+	auto sample = params["sample"];
+	if (sample.empty()) {
+	  sample = evhttp_uri_get_path(uri);
+	}
+	if (auto sequence = play(sample)) {
+	  out << "PLAYING " << sequence << std::endl;
+	  return true;
+	} else {
+	  out << "FAILED" << std::endl;
+	  return false;
+	}
       }
     }
 
@@ -245,16 +339,24 @@ namespace
       unsigned long client_token_number = std::stoul(client_token);
 
       auto remote = remote_address(addr, addr_len);
-      std::cout << "Received UDP request from " << remote << " for " << client << " with token " << client_token_number << std::endl;
-
-      out << "audiomixserver/1" << std::endl
+      std::cout << "Received UDP request from " << remote << " for " << client << " with token "
+		<< client_token_number << ": " << cmd << " " << path << std::endl;
+      
+      if (!starts_with("audiomixclient/", client)) {
+	std::cerr << "Not an audiomixclient: " << client << std::endl;
+	return;
+      }
+      
+      out << "audiomixserver/2" << std::endl
 	  << "TOKEN " << client_tokens[remote] << std::endl;
     
-      if (client_tokens[remote] >= client_token_number && cmd != "reset"){
+      if (client_tokens[remote] >= client_token_number && cmd != "reset") {
 	out << "ALREADY AT TOKEN " << client_tokens[remote] << std::endl;
       } else {
 	client_tokens[remote] = client_token_number;
-	handle_request(out, cmd, path);
+	auto uri = std::unique_ptr<evhttp_uri, decltype(&evhttp_uri_free)>
+	  (evhttp_uri_parse(cmd.c_str()), &evhttp_uri_free);
+	handle_request(out, uri.get());
       }
 
       auto msg = out.str();
@@ -310,19 +412,42 @@ namespace
     
       return true;
     }
+
+    void sequence_done(sequence_t sequence) {
+      if (!sequence) {
+	return;
+      }
+      
+      auto i = sequence_to_status.find(sequence);
+      if (i != sequence_to_status.end()) {
+	auto status = i->second;
+	sequence_to_status.erase(i);
+	if (status.next_sequence) {
+	  auto next_status = sequence_to_status.find(status.next_sequence);
+	  if (next_status != sequence_to_status.end()) {
+	    std::cout << time_millis() << " queued play of " << status.next_sequence << " after " << sequence << std::endl;
+	    start_sequence(next_status);
+	  }
+	}
+      }
+      
+    }
+
+    void finished_channel(int channel) {
+      auto sequence = channel_to_sequence[channel];
+      std::cout << time_millis() << " finished playing " << sequence << " on channel " << channel << std::endl;
+
+      channel_to_sequence.erase(channel);
+      sequence_done(sequence);
+    }
   };
 
   context* global_ctx;
 
   void finished_channel(int channel) {
-    auto sequence = global_ctx->channel_to_sequence[channel];
-    std::cout << time_millis() << " finished playing " << sequence << " on channel " << channel << std::endl;
-
-    global_ctx->sequence_to_channel.erase(sequence);
-    global_ctx->channel_to_sequence.erase(channel);
+    global_ctx->finished_channel(channel);
   }
 }
-
 
 
 int main(int argc, char*argv[]) {
