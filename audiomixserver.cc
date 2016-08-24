@@ -104,6 +104,7 @@ namespace
 	return 0;
       }
       if (p != chunks.end()) {
+	std::cerr << "Chunk " << name << " is " << p->second << std::endl;
 	return p->second;
       }
 
@@ -307,6 +308,21 @@ namespace
 	  out << "FAILED" << std::endl;
 	  return false;
 	}
+      } else if ("songs" == cmd) {
+	out << "SONGS " << ordered_chunks.size() << std::endl;
+	for (auto const& pair : chunks){
+	  out << pair.first << std::endl;
+	}
+	return true;	
+      } else if (cmd.empty()) {
+	for (auto const& pair : chunks){
+	  auto encoded = std::unique_ptr<char, decltype(&free)>(evhttp_uriencode(pair.first.data(), pair.first.size(), true), &free);
+	  out << "<A href=\"/play?sample=" << encoded.get() << "\">" << pair.first << "</a><br/>" << std::endl;
+	}
+	return true;
+      } else if ("song_count" == cmd) {
+	out << "SONGS " << ordered_chunks.size() << std::endl;
+	return true;
       } else {
 	auto sample = params["sample"];
 	if (sample.empty()) {
