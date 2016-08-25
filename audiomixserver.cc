@@ -289,17 +289,25 @@ namespace
 	}
 
 	sequence_t seq = 0;
+	bool found = false;
+	
 	{
 	  lock_sdl_audio _;
 	  auto i = sequence_to_status.find(sequence);
 	  if (i != sequence_to_status.end()) {
-	    sequence_done(i->second.next_sequence);
-	    i->second.next_sequence = seq =  fresh_sequence_number();
-	    sequence_to_status.emplace(seq,  sequence_status{chunk});
+	    found = true;
+	    if (i->second.sequence_channel >= 0) {
+	      sequence_done(i->second.next_sequence);
+	      i->second.next_sequence = seq =  fresh_sequence_number();
+	      sequence_to_status.emplace(seq,  sequence_status{chunk});
+	    }
 	  }
 	}
 	if (seq) {
 	  out << "QUEUED " << seq << std::endl;
+	  return true;
+	} else if (found) {
+	  out << "WAIT" << std::endl;
 	  return true;
 	} else if (auto s = play(chunk)) {
 	  out << "PLAYING " << s << std::endl;
@@ -363,11 +371,11 @@ namespace
 	return;
       }
       
-      out << "audiomixserver/2" << std::endl
-	  << "TOKEN " << client_tokens[remote] << std::endl;
+      out << "audiomixserver/3" << std::endl
+	  << "TOKEN " << client_token_number << std::endl;
     
       if (client_tokens[remote] >= client_token_number && cmd != "reset") {
-	out << "ALREADY AT TOKEN " << client_tokens[remote] << std::endl;
+	out << "ALREADY " << client_tokens[remote] << std::endl;
       } else {
 	client_tokens[remote] = client_token_number;
 	auto uri = std::unique_ptr<evhttp_uri, decltype(&evhttp_uri_free)>
