@@ -1,3 +1,4 @@
+#include <cctype>
 #include <iostream>
 #include <chrono>
 #include <unordered_map>
@@ -21,6 +22,61 @@
 namespace 
 {
   typedef unsigned long sequence_t;
+
+  std::unordered_map<char, std::string> const& character_to_morse{
+    {'\n', ".-.-"},
+      {'!', "---."},
+        {'\"', ".-..-."},
+          {'\'', ".----."},
+            {'(', "-.--."},
+              {')', "-.--.-"},
+                {'+', ".-.-."},
+                  {',', "--..--"},
+                    {'-', "-....-"},
+                      {'.', ".-.-.-"},
+                        {'/', "-..-."},
+                          {'0', "-----"},
+                            {'1', ".----"},
+                              {'2', "..---"},
+                                {'3', "...--"},
+                                  {'4', "....-"},
+                                    {'5', "....."},
+                                      {'6', "-...."},
+                                        {'7', "--..."},
+                                          {'8', "---.."},
+                                            {'9', "----."},
+                                              {':', "---..."},
+                                                {';', "-.-.-."},
+                                                  {'=', "-...-"},
+                                                    {'?', "..--.."},
+                                                      {'@', ".--.-."},
+                                                        {'A', ".-"},
+                                                          {'B', "-..."},
+                                                            {'C', "-.-."},
+                                                              {'D', "-.."},
+                                                                {'E', "."},
+                                                                  {'F', "..-."},
+                                                                    {'G', "--."},
+                                                                      {'H', "...."},
+                                                                        {'I', ".."},
+                                                                          {'J', ".---"},
+                                                                            {'K', "-.-"},
+                                                                              {'L', ".-.."},
+                                                                                {'M', "--"},
+                                                                                  {'N', "-."},
+                                                                                    {'O', "---"},
+                                                                                      {'P', ".--."},
+                                                                                        {'Q', "--.-"},
+                                                                                          {'R', ".-."},
+                                                                                            {'S', "..."},
+                                                                                              {'T', "-"},
+                                                                                                {'U', "..-"},
+                                                                                                  {'V', "...-"},
+                                                                                                    {'W', ".--"},
+                                                                                                      {'X', "-..-"},
+                                                                                                        {'Y', "-.--"},
+                                                                                                          {'Z', "--.."},
+                                                                                                            };
 
   struct sequence_status 
   {
@@ -130,6 +186,47 @@ namespace
       return play(chunk);
     }
 
+    sequence_t play_morse(std::string const& morse) {
+      auto dot = name_to_chunk("morse_dot.mp3");
+      auto dash = name_to_chunk("morse_dash.mp3");
+      auto space = name_to_chunk("morse_space.mp3");
+      
+      lock_sdl_audio _;
+      sequence_status *last_status = nullptr;
+      sequence_t first_sequence = 0;
+      
+      for (auto const& c : morse) {
+        Mix_Chunk* chunk = nullptr;
+        switch(c) {
+        case '.': chunk = dot;
+          break;
+        case '-': chunk = dash;
+          break;
+        case ' ': chunk = space;
+          break;
+        }
+        if (chunk) {
+          auto i = sequence_to_status.emplace(fresh_sequence_number(),  sequence_status{chunk}).first;
+          if (last_status) {
+            last_status->next_sequence = i->first;
+          }
+          if (!first_sequence) {
+            first_sequence = i->first;
+          }
+          
+          last_status = &i->second;
+        }
+      }
+
+      if (!first_sequence) {
+        return 0;
+      }
+      
+      
+      return start_sequence(sequence_to_status.find(first_sequence));
+    }
+    
+
     sequence_t fresh_sequence_number() {
       auto new_sequence =  ++sequence;
       if (0 == sequence) {
@@ -144,7 +241,7 @@ namespace
       return start_sequence(i.first);
     }
 
-    sequence_t start_sequence(decltype(sequence_to_status)::iterator& i) {
+    sequence_t start_sequence(decltype(sequence_to_status)::iterator const& i) {
       int channel = Mix_PlayChannel(-1, i->second.sequence_chunk, 0);
       if (channel < 0) {
 	std::cerr << "Mix_PlayChannel " << channel << " " << Mix_GetError() << " for sequence " << i->first << std::endl;
@@ -331,6 +428,30 @@ namespace
       } else if ("song_count" == cmd) {
 	out << "SONGS " << ordered_chunks.size() << std::endl;
 	return true;
+      } else if ("play_morse_message" == cmd) {
+	auto message_text = params["message"];
+        std::ostringstream oss;
+        bool first = true;
+        for (auto& c : message_text) {
+          if (!first) {
+            oss << " ";
+          } else {
+            first = false;
+          }
+          
+          auto m = character_to_morse.find(std::toupper(c));
+          if (character_to_morse.end() == m) {
+            out << "UNKNOWN CHARACTER" << std::endl;
+            return false;
+          } else {
+            oss << m->second;
+          }
+        }
+        std::cout << "sending morse code " << oss.str() << std::endl;
+
+        auto s = play_morse(oss.str());
+        out << "PLAYING " << s << std::endl;
+        return true;
       } else {
 	auto sample = params["sample"];
 	if (sample.empty()) {
