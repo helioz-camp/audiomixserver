@@ -25,6 +25,7 @@ namespace
 
   std::unordered_map<char, std::string> const& character_to_morse{
     {'\n', ".-.-"},
+      {' ', " "},
       {'!', "---."},
         {'\"', ".-..-."},
           {'\'', ".----."},
