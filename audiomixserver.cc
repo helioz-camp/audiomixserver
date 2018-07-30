@@ -1,9 +1,11 @@
 #include <cctype>
 #include <chrono>
+#include <csignal>
 #include <cstdio>
 #include <iomanip>
 #include <iostream>
 #include <random>
+#include <thread>
 #include <unordered_map>
 
 #include "SDL.h"
@@ -18,6 +20,8 @@
 #include "event2/http.h"
 #include "event2/http_compat.h"
 #include "event2/keyvalq_struct.h"
+
+#include "GL/gl.h"
 
 namespace {
 typedef unsigned long sequence_t;
@@ -43,9 +47,11 @@ struct sequence_status {
   Mix_Chunk *sequence_chunk;
   int sequence_channel;
   sequence_t next_sequence;
+  float sequence_brightness;
 
   sequence_status(Mix_Chunk *chunk)
-      : sequence_chunk(chunk), sequence_channel(-1), next_sequence(0) {}
+      : sequence_chunk(chunk), sequence_channel(-1), next_sequence(0),
+        sequence_brightness(0) {}
 };
 
 std::unordered_map<std::string, std::string> uri_params(evhttp_uri const *uri) {
@@ -99,7 +105,12 @@ struct context {
   std::unordered_map<sequence_t, sequence_status> sequence_to_status;
   sequence_t sequence = random_sequence_number();
 
-  context(boost::program_options::variables_map &vm_) : vm(vm_) {}
+  GLclampf background_r;
+  GLclampf background_g;
+  GLclampf background_b;
+
+  context(boost::program_options::variables_map &vm_)
+      : vm(vm_), background_r(0), background_g(0), background_b(0) {}
 
   Mix_Chunk *name_to_chunk(std::string const &name) {
     auto p = chunks.find(name);
@@ -147,12 +158,15 @@ struct context {
 
     for (auto const &c : morse) {
       Mix_Chunk *chunk = nullptr;
+      auto brightness = 0.0;
       switch (c) {
       case '.':
         chunk = dot;
+        brightness = .9;
         break;
       case '-':
         chunk = dash;
+        brightness = 1.0;
         break;
       case ' ':
         chunk = space;
@@ -162,6 +176,7 @@ struct context {
         auto i = sequence_to_status
                      .emplace(fresh_sequence_number(), sequence_status{chunk})
                      .first;
+        i->second.sequence_brightness = brightness;
         if (last_status) {
           last_status->next_sequence = i->first;
         }
@@ -206,6 +221,10 @@ struct context {
       std::cout << time_millis() << " playing " << i->first << " on channel "
                 << channel << std::endl;
     }
+    background_r = i->second.sequence_brightness;
+    background_g = i->second.sequence_brightness;
+    background_b = i->second.sequence_brightness;
+
     channel_to_sequence[channel] = i->first;
     i->second.sequence_channel = channel;
     return i->first;
@@ -570,9 +589,23 @@ struct context {
     auto sequence = channel_to_sequence[channel];
     std::cout << time_millis() << " finished playing " << sequence
               << " on channel " << channel << std::endl;
+    background_r = 0;
+    background_g = 0;
+    background_b = 0;
 
     channel_to_sequence.erase(channel);
     sequence_done(sequence);
+  }
+
+  void setup_opengl_thread() {
+    std::cout << "audiomixserver running GL " << glGetString(GL_VERSION)
+              << std::endl;
+  }
+
+  void render_frame_with_opengl() {
+    glClearColor(background_r, background_g, background_b, 1.0);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glFinish();
   }
 };
 
@@ -598,7 +631,10 @@ int main(int argc, char *argv[]) {
                                        po::value<int>()->default_value(13231),
                                        "Port to listen on for HTTP")(
       "bind_port_udp", po::value<int>()->default_value(13231),
-      "Port to listen on for UDP");
+      "Port to listen on for UDP")("visuals",
+                                   po::value<bool>()->default_value(true),
+                                   "Open GL visualisations");
+
   po::variables_map vm;
   po::positional_options_description p;
   p.add("sample-files", -1);
@@ -617,7 +653,7 @@ int main(int argc, char *argv[]) {
   int ret = SDL_Init(SDL_INIT_AUDIO);
 
   if (ret < 0) {
-    std::cerr << "SDL_Init " << ret << " " << SDL_GetError() << std::endl;
+    std::cerr << "SDL_Init audio " << ret << " " << SDL_GetError() << std::endl;
     return 2;
   }
 
@@ -628,9 +664,47 @@ int main(int argc, char *argv[]) {
     return 3;
   }
 
+  context ctx(vm);
   Mix_AllocateChannels(vm["allocate_sdl_channels"].as<int>());
 
-  context ctx(vm);
+  if (vm["visuals"].as<bool>()) {
+    ret = SDL_Init(SDL_INIT_VIDEO);
+    // reset control-C handling to default, which is messed up by SDL
+    std::signal(SIGINT, SIG_DFL);
+    if (ret < 0) {
+      std::cerr << "SDL_Init video " << ret << " " << SDL_GetError()
+                << std::endl;
+      return 2;
+    }
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
+    SDL_DisplayMode display_mode;
+
+    ret = SDL_GetCurrentDisplayMode(0, &display_mode);
+    if (ret < 0) {
+      std::cerr << "SDL_GetCurrentDisplayMode " << ret << " " << SDL_GetError()
+                << std::endl;
+      return 93;
+    }
+
+    new std::thread([&] {
+      auto window = SDL_CreateWindow(argv[0], SDL_WINDOWPOS_UNDEFINED,
+                                     SDL_WINDOWPOS_UNDEFINED, display_mode.w,
+                                     display_mode.h,
+                                     SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN);
+
+      SDL_GL_CreateContext(window);
+      SDL_GL_SetSwapInterval(1);
+      ctx.setup_opengl_thread();
+      for (;;) {
+        ctx.render_frame_with_opengl();
+        SDL_GL_SwapWindow(window);
+      }
+    });
+  }
+
   global_ctx = &ctx; // as finished_channel needs a global
   Mix_ChannelFinished(finished_channel);
 
