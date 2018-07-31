@@ -44,6 +44,18 @@ std::unordered_map<char, std::string> const &character_to_morse{
     {'Z', "--.."},
 };
 
+void clear_gl_errors_helper(char const *function, int line) {
+  auto err = glGetError();
+
+  if (err != GL_NO_ERROR) {
+    std::cerr << __FILE__ << ":" << line << " in " << function
+              << " check_gl_error " << err << std::endl;
+    clear_gl_errors_helper(function, line);
+  }
+}
+
+#define clear_gl_errors() clear_gl_errors_helper(__FUNCTION__, __LINE__)
+
 struct helio_gl_shader {
   GLuint gl_shader_number;
   std::string shader_source_string;
@@ -59,6 +71,11 @@ struct helio_gl_shader {
   void read_shader_source_string() {
     std::ostringstream oss;
     std::ifstream s{shader_filename};
+    if (!s.good()) {
+      std::cerr << "read_shader_source_string failed to read "
+                << shader_filename << std::endl;
+    }
+
     oss << s.rdbuf();
     shader_source_string = oss.str();
   }
@@ -71,17 +88,19 @@ struct helio_gl_shader {
     glCompileShader(gl_shader_number);
     GLsizei returned_size = 0;
     GLchar info_log[0x1000];
-    glGetShaderInfoLog(gl_shader_number, sizeof(info_log) / sizeof(info_log[0]),
-                       &returned_size, info_log);
-    std::cerr << "GL compile shader " << shader_filename << ": " << info_log
-              << std::endl;
     GLint was_compiled = 0;
     glGetShaderiv(gl_shader_number, GL_COMPILE_STATUS, &was_compiled);
     if (was_compiled != GL_TRUE) {
+      glGetShaderInfoLog(gl_shader_number,
+                         sizeof(info_log) / sizeof(info_log[0]), &returned_size,
+                         info_log);
+      std::cerr << "GL compile shader " << shader_filename << ": " << info_log
+                << std::endl;
       std::cerr << "Could not compile shader from " << shader_filename
                 << std::endl
                 << shader_source_string << std::endl;
     }
+    clear_gl_errors();
   }
 };
 
@@ -89,9 +108,16 @@ struct helio_gl_program {
   GLuint gl_program_number;
   std::vector<helio_gl_shader> gl_program_shaders;
 
+  void init_gl_program() { gl_program_number = glCreateProgram(); }
+
   void reset_shader(helio_gl_shader &shader) {
     glDetachShader(gl_program_number, shader.gl_shader_number);
 
+    compile_and_attach_shader(shader);
+  }
+
+  template <typename... Params> void add_shader(Params &&... params) {
+    auto &shader = gl_program_shaders.emplace_back(params...);
     compile_and_attach_shader(shader);
   }
 
@@ -100,7 +126,22 @@ struct helio_gl_program {
     glAttachShader(gl_program_number, shader.gl_shader_number);
   }
 
-  void link_gl_program() { glLinkProgram(gl_program_number); }
+  void link_gl_program() {
+    glLinkProgram(gl_program_number);
+    GLsizei returned_size = 0;
+    GLchar info_log[0x1000];
+    glGetProgramInfoLog(gl_program_number,
+                        sizeof(info_log) / sizeof(info_log[0]), &returned_size,
+                        info_log);
+    GLint status = 0;
+    glGetProgramiv(gl_program_number, GL_LINK_STATUS, &status);
+
+    if (status != GL_TRUE) {
+      std::cerr << "GL link_gl_program " << gl_program_number << " " << info_log
+                << std::endl;
+    }
+    clear_gl_errors();
+  }
 };
 
 struct sequence_status {
@@ -168,6 +209,8 @@ struct context {
   GLclampf background_r;
   GLclampf background_g;
   GLclampf background_b;
+
+  helio_gl_program gl_program;
 
   context(boost::program_options::variables_map &vm_)
       : vm(vm_), background_r(0), background_g(0), background_b(0) {}
@@ -669,23 +712,56 @@ struct context {
     auto sequence = channel_to_sequence[channel];
     std::cout << time_millis() << " finished playing " << sequence
               << " on channel " << channel << std::endl;
-    background_r = 0;
-    background_g = 0;
-    background_b = 0;
+    set_brightness(0.);
 
     channel_to_sequence.erase(channel);
     sequence_done(sequence);
   }
 
   void setup_opengl_thread() {
-    std::cout << "audiomixserver running GL " << glGetString(GL_VERSION)
+    std::cout << "setup_opengl_thread GL " << glGetString(GL_VERSION)
               << std::endl;
+    clear_gl_errors();
+    gl_program.init_gl_program();
+
+    gl_program.add_shader("gl_vertex_shader.shader", GL_VERTEX_SHADER);
+    gl_program.add_shader("gl_fragment_shader.shader", GL_FRAGMENT_SHADER);
+    gl_program.link_gl_program();
   }
 
   void render_frame_with_opengl() {
+    clear_gl_errors();
     glClearColor(background_r, background_g, background_b, 1.0);
     glClear(GL_COLOR_BUFFER_BIT);
+
+    /*
+    GLfloat vertex_buffer_data[] = {
+	-1,-1,    
+	-1,+1, 
+	+1,+1,
+	+1,+1,
+	+1,-1,  
+	-1,-1,  
+    };
+
+    GLuint location =
+        glGetAttribLocation(gl_program.gl_program_number, "position");
+
+    GLuint vertex_buffer_number;
+    glGenBuffers(1, &vertex_buffer_number);
+    glBindBuffer(GL_ARRAY_BUFFER, vertex_buffer_number);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertex_buffer_data),
+                 vertex_buffer_data, GL_STATIC_DRAW);
+
+    glUseProgram(gl_program.gl_program_number);
+    glEnableVertexAttribArray(location);
+    glVertexAttribPointer(location, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    clear_gl_errors();
+    */
+    
     glFinish();
+    clear_gl_errors();
   }
 };
 
@@ -753,6 +829,7 @@ int main(int argc, char *argv[]) {
 
   if (vm["visuals"].as<bool>()) {
     ret = SDL_Init(SDL_INIT_VIDEO);
+    SDL_ShowCursor(SDL_DISABLE);
     // reset control-C handling to default, which is messed up by SDL
     std::signal(SIGINT, SIG_DFL);
     if (ret < 0) {
@@ -760,10 +837,6 @@ int main(int argc, char *argv[]) {
                 << std::endl;
       return 2;
     }
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
-    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
     SDL_DisplayMode display_mode;
 
     ret = SDL_GetCurrentDisplayMode(0, &display_mode);
@@ -774,15 +847,39 @@ int main(int argc, char *argv[]) {
     }
 
     new std::thread([&] {
+      SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
+      SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+      SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
       auto window = SDL_CreateWindow(argv[0], SDL_WINDOWPOS_UNDEFINED,
                                      SDL_WINDOWPOS_UNDEFINED, display_mode.w,
                                      display_mode.h,
                                      SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN);
 
       SDL_GL_CreateContext(window);
+      clear_gl_errors();
+      auto init_error = glewInit();
+      if (GLEW_OK != init_error) {
+        std::cerr << "glewInit failed: " << glewGetErrorString(init_error)
+                  << std::endl;
+      }
       SDL_GL_SetSwapInterval(1);
       ctx.setup_opengl_thread();
       for (;;) {
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+          switch (event.type) {
+          case SDL_KEYUP:
+            if (event.key.keysym.sym == SDLK_ESCAPE) {
+              std::cout << "Exiting due to SDL_KEYUP SDLK_ESCAPE" << std::endl;
+              std::exit(0);
+            }
+
+            break;
+          case SDL_QUIT:
+            std::cout << "Exiting due to SDL_QUIT" << std::endl;
+            std::exit(0);
+          }
+        }
         ctx.render_frame_with_opengl();
         SDL_GL_SwapWindow(window);
       }
