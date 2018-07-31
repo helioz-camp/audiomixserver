@@ -2,9 +2,9 @@
 #include <chrono>
 #include <csignal>
 #include <cstdio>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
-#include <fstream>
 #include <random>
 #include <thread>
 #include <unordered_map>
@@ -44,18 +44,15 @@ std::unordered_map<char, std::string> const &character_to_morse{
     {'Z', "--.."},
 };
 
- 
-struct helio_gl_shader 
-{
+struct helio_gl_shader {
   GLuint gl_shader_number;
   std::string shader_source_string;
   std::string const shader_filename;
   GLenum gl_shader_type;
 
-  helio_gl_shader(std::string const& filename, GLenum shader_type)
-    : gl_shader_number(glCreateShader(shader_type)),
-      shader_filename(filename),
-      gl_shader_type(shader_type) {
+  helio_gl_shader(std::string const &filename, GLenum shader_type)
+      : gl_shader_number(glCreateShader(shader_type)),
+        shader_filename(filename), gl_shader_type(shader_type) {
     read_shader_source_string();
   }
 
@@ -67,45 +64,45 @@ struct helio_gl_shader
   }
 
   void compile_shader() {
-    GLchar const* source = shader_source_string.c_str();
-    GLint sizes[] = { GLint(shader_source_string.size()) };
+    GLchar const *source = shader_source_string.c_str();
+    GLint sizes[] = {GLint(shader_source_string.size())};
     glShaderSource(gl_shader_number, 1, &source, sizes);
-    
+
     glCompileShader(gl_shader_number);
     GLsizei returned_size = 0;
     GLchar info_log[0x1000];
-    glGetShaderInfoLog(gl_shader_number, sizeof(info_log)/sizeof(info_log[0]), &returned_size, info_log);
-    std::cerr << "GL compile shader " << shader_filename << ": " << info_log << std::endl;
+    glGetShaderInfoLog(gl_shader_number, sizeof(info_log) / sizeof(info_log[0]),
+                       &returned_size, info_log);
+    std::cerr << "GL compile shader " << shader_filename << ": " << info_log
+              << std::endl;
     GLint was_compiled = 0;
     glGetShaderiv(gl_shader_number, GL_COMPILE_STATUS, &was_compiled);
     if (was_compiled != GL_TRUE) {
-      std::cerr << "Could not compile shader from " << shader_filename << std::endl
+      std::cerr << "Could not compile shader from " << shader_filename
+                << std::endl
                 << shader_source_string << std::endl;
     }
   }
 };
 
- struct helio_gl_program {
-   GLuint gl_program_number;
-   std::vector<helio_gl_shader> gl_program_shaders;
+struct helio_gl_program {
+  GLuint gl_program_number;
+  std::vector<helio_gl_shader> gl_program_shaders;
 
-   void reset_shader(helio_gl_shader& shader) {
-     glDetachShader(gl_program_number, shader.gl_shader_number);
+  void reset_shader(helio_gl_shader &shader) {
+    glDetachShader(gl_program_number, shader.gl_shader_number);
 
-     compile_and_attach_shader(shader);
-   }
+    compile_and_attach_shader(shader);
+  }
 
-   void compile_and_attach_shader(helio_gl_shader& shader) {
-     shader.compile_shader();
-     glAttachShader(gl_program_number, shader.gl_shader_number);
-   }
+  void compile_and_attach_shader(helio_gl_shader &shader) {
+    shader.compile_shader();
+    glAttachShader(gl_program_number, shader.gl_shader_number);
+  }
 
-   void link_gl_program() {
-     glLinkProgram(gl_program_number);
-   }
- };
- 
- 
+  void link_gl_program() { glLinkProgram(gl_program_number); }
+};
+
 struct sequence_status {
   Mix_Chunk *sequence_chunk;
   int sequence_channel;
@@ -273,6 +270,20 @@ struct context {
     return start_sequence(i.first);
   }
 
+  void set_brightness(float brightness) {
+    background_r = brightness;
+    background_g = brightness;
+    background_b = brightness;
+
+    auto laser_level = brightness > 0.5 ? 1 : 0;
+
+    auto option = vm["gpio_path"];
+    if (!option.empty()) {
+      std::ofstream laser_gpio{option.as<std::string>()};
+      laser_gpio << (laser_level ^ vm["gpio_off_value"].as<int>());
+    }
+  }
+
   sequence_t start_sequence(decltype(sequence_to_status)::iterator const &i) {
     int channel = Mix_PlayChannel(-1, i->second.sequence_chunk, 0);
     if (channel < 0) {
@@ -284,9 +295,8 @@ struct context {
       std::cout << time_millis() << " playing " << i->first << " on channel "
                 << channel << std::endl;
     }
-    background_r = i->second.sequence_brightness;
-    background_g = i->second.sequence_brightness;
-    background_b = i->second.sequence_brightness;
+
+    set_brightness(i->second.sequence_brightness);
 
     channel_to_sequence[channel] = i->first;
     i->second.sequence_channel = channel;
@@ -687,6 +697,10 @@ int main(int argc, char *argv[]) {
       "Bytes sent to sound output each time, divide by frequency to find "
       "duration")("sample-files", po::value<std::vector<std::string>>(),
                   "OGG, WAV or MP3 sample files")(
+      "gpio_path", po::value<std::string>(),
+      "path to GPIO pin for the laser relay")(
+      "gpio_off_value", po::value<int>()->default_value(1),
+      "value for the GPIO pin when the laser is off")(
       "allocate_sdl_channels", po::value<int>()->default_value(2048),
       "Number of SDL channels to mix together")(
       "bind_address", po::value<std::string>()->default_value("0.0.0.0"),
