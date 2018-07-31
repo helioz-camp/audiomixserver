@@ -211,10 +211,29 @@ struct context {
     auto dot = name_to_chunk("morse_dot.mp3");
     auto dash = name_to_chunk("morse_dash.mp3");
     auto space = name_to_chunk("morse_space.mp3");
+    auto gap = name_to_chunk("morse_gap.mp3");
 
     lock_sdl_audio _;
     sequence_status *last_status = nullptr;
     sequence_t first_sequence = 0;
+    auto add_chunk = [&](Mix_Chunk *chunk, double brightness = 0) {
+      if (!chunk) {
+        return;
+      }
+
+      auto i = sequence_to_status
+                   .emplace(fresh_sequence_number(), sequence_status{chunk})
+                   .first;
+      i->second.sequence_brightness = brightness;
+      if (last_status) {
+        last_status->next_sequence = i->first;
+      }
+      if (!first_sequence) {
+        first_sequence = i->first;
+      }
+
+      last_status = &i->second;
+    };
 
     for (auto const &c : morse) {
       Mix_Chunk *chunk = nullptr;
@@ -232,20 +251,8 @@ struct context {
         chunk = space;
         break;
       }
-      if (chunk) {
-        auto i = sequence_to_status
-                     .emplace(fresh_sequence_number(), sequence_status{chunk})
-                     .first;
-        i->second.sequence_brightness = brightness;
-        if (last_status) {
-          last_status->next_sequence = i->first;
-        }
-        if (!first_sequence) {
-          first_sequence = i->first;
-        }
-
-        last_status = &i->second;
-      }
+      add_chunk(chunk, brightness);
+      add_chunk(gap);
     }
 
     if (!first_sequence) {
