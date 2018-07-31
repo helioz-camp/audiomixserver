@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <iomanip>
 #include <iostream>
+#include <fstream>
 #include <random>
 #include <thread>
 #include <unordered_map>
@@ -21,7 +22,7 @@
 #include "event2/http_compat.h"
 #include "event2/keyvalq_struct.h"
 
-#include "GL/gl.h"
+#include "GL/glew.h"
 
 namespace {
 typedef unsigned long sequence_t;
@@ -43,6 +44,68 @@ std::unordered_map<char, std::string> const &character_to_morse{
     {'Z', "--.."},
 };
 
+ 
+struct helio_gl_shader 
+{
+  GLuint gl_shader_number;
+  std::string shader_source_string;
+  std::string const shader_filename;
+  GLenum gl_shader_type;
+
+  helio_gl_shader(std::string const& filename, GLenum shader_type)
+    : gl_shader_number(glCreateShader(shader_type)),
+      shader_filename(filename),
+      gl_shader_type(shader_type) {
+    read_shader_source_string();
+  }
+
+  void read_shader_source_string() {
+    std::ostringstream oss;
+    std::ifstream s{shader_filename};
+    oss << s.rdbuf();
+    shader_source_string = oss.str();
+  }
+
+  void compile_shader() {
+    GLchar const* source = shader_source_string.c_str();
+    GLint sizes[] = { GLint(shader_source_string.size()) };
+    glShaderSource(gl_shader_number, 1, &source, sizes);
+    
+    glCompileShader(gl_shader_number);
+    GLsizei returned_size = 0;
+    GLchar info_log[0x1000];
+    glGetShaderInfoLog(gl_shader_number, sizeof(info_log)/sizeof(info_log[0]), &returned_size, info_log);
+    std::cerr << "GL compile shader " << shader_filename << ": " << info_log << std::endl;
+    GLint was_compiled = 0;
+    glGetShaderiv(gl_shader_number, GL_COMPILE_STATUS, &was_compiled);
+    if (was_compiled != GL_TRUE) {
+      std::cerr << "Could not compile shader from " << shader_filename << std::endl
+                << shader_source_string << std::endl;
+    }
+  }
+};
+
+ struct helio_gl_program {
+   GLuint gl_program_number;
+   std::vector<helio_gl_shader> gl_program_shaders;
+
+   void reset_shader(helio_gl_shader& shader) {
+     glDetachShader(gl_program_number, shader.gl_shader_number);
+
+     compile_and_attach_shader(shader);
+   }
+
+   void compile_and_attach_shader(helio_gl_shader& shader) {
+     shader.compile_shader();
+     glAttachShader(gl_program_number, shader.gl_shader_number);
+   }
+
+   void link_gl_program() {
+     glLinkProgram(gl_program_number);
+   }
+ };
+ 
+ 
 struct sequence_status {
   Mix_Chunk *sequence_chunk;
   int sequence_channel;

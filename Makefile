@@ -1,4 +1,4 @@
-CXXFLAGS = -Wall -ggdb -std=c++1y
+CXXFLAGS = -Wall -ggdb -std=c++1z
 
 all: audiomixserver
 clean:
