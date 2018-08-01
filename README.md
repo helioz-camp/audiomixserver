@@ -39,6 +39,8 @@ Mac OSX
 - brew install sdl_mixer
 - brew install boost
 - brew install libevent
+- brew install glew
+- brew install pkg-config
 
 - make
 

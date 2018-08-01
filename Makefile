@@ -6,10 +6,12 @@ clean:
 
 .PHONY: all clean
 
-sdl_cflags := $(shell pkg-config --cflags sdl2 SDL2_mixer)
-sdl_libs := $(shell pkg-config --libs sdl2 SDL2_mixer)
-override CXXFLAGS += $(sdl_cflags)
-override LDFLAGS += $(sdl_libs) -lboost_program_options -levent -lGL -lGLEW -pthread
+
+pkg_cflags := $(shell pkg-config --cflags sdl2 SDL2_mixer glew)
+pkg_libs := $(shell pkg-config --libs sdl2 SDL2_mixer glew)
+glew_libs := $(shell pkg-config --libs glew)
+override CXXFLAGS += $(pkg_cflags)
+override LDFLAGS += $(pkg_libs) -lboost_program_options -levent -pthread
 
 audiomixserver: audiomixserver.o
 	$(CXX) $(CXXFLAGS) -o $@ $< $(LDFLAGS)
