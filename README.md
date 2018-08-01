@@ -42,7 +42,7 @@ Mac OSX
 - brew install glew
 - brew install pkg-config
 
-- make
+- make LDFLAGS="-framework OpenGL"
 
 - ./audiomixserver /[path to directory where you're storing the sounds]/*
 
