@@ -1,6 +1,5 @@
-#version 100
+#version 110
 
-precision mediump float;
 uniform vec2 resolution;
 uniform vec3 background;
 uniform float wobble;

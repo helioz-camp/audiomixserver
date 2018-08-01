@@ -480,7 +480,8 @@ struct context {
     case AF_INET6: {
       char namebuf[INET6_ADDRSTRLEN];
       auto sa = static_cast<const sockaddr_in6 *>(addr);
-      if (!evutil_inet_ntop(AF_INET6, &sa->sin6_addr, namebuf, sizeof(namebuf))) {
+      if (!evutil_inet_ntop(AF_INET6, &sa->sin6_addr, namebuf,
+                            sizeof(namebuf))) {
         std::cerr << "evutil_inet_ntop AF_INET6 "
                   << evutil_socket_error_to_string(EVUTIL_SOCKET_ERROR())
                   << std::endl;
@@ -899,21 +900,6 @@ int main(int argc, char *argv[]) {
       SDL_GL_SetSwapInterval(1);
       ctx.setup_opengl_thread();
       for (;;) {
-        SDL_Event event;
-        while (SDL_PollEvent(&event)) {
-          switch (event.type) {
-          case SDL_KEYUP:
-            if (event.key.keysym.sym == SDLK_ESCAPE) {
-              std::cout << "Exiting due to SDL_KEYUP SDLK_ESCAPE" << std::endl;
-              std::exit(0);
-            }
-
-            break;
-          case SDL_QUIT:
-            std::cout << "Exiting due to SDL_QUIT" << std::endl;
-            std::exit(0);
-          }
-        }
         ctx.render_frame_with_opengl();
         SDL_GL_SwapWindow(window);
       }
@@ -950,9 +936,32 @@ int main(int argc, char *argv[]) {
     std::cerr << "init_http" << std::endl;
   }
 
-  if (event_dispatch() == -1) {
-    std::cerr << "event_dispatch" << std::endl;
-    return 7;
+  auto libevent_thread = std::thread([] {
+    if (event_dispatch() == -1) {
+      std::cerr << "event_dispatch" << std::endl;
+      std::exit(7);
+    }
+  });
+
+  // SDL demands the main thread under Mac OS X or else gets
+  // "nextEventMatchingMask should only be called from the Main
+  // Thread!"
+  for (;;) {
+    SDL_Event event;
+    while (SDL_PollEvent(&event)) {
+      switch (event.type) {
+      case SDL_KEYUP:
+        if (event.key.keysym.sym == SDLK_ESCAPE) {
+          std::cout << "Exiting due to SDL_KEYUP SDLK_ESCAPE" << std::endl;
+          std::exit(0);
+        }
+
+        break;
+      case SDL_QUIT:
+        std::cout << "Exiting due to SDL_QUIT" << std::endl;
+        std::exit(0);
+      }
+    }
   }
 
   return 0;
