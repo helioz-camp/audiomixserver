@@ -86,21 +86,24 @@ struct helio_gl_shader {
     glShaderSource(gl_shader_number, 1, &source, sizes);
 
     glCompileShader(gl_shader_number);
+    clear_gl_errors();
+
     GLsizei returned_size = 0;
     GLchar info_log[0x1000];
-    GLint was_compiled = 0;
+    GLint was_compiled = GL_FALSE;
     glGetShaderiv(gl_shader_number, GL_COMPILE_STATUS, &was_compiled);
-    if (was_compiled != GL_TRUE) {
-      glGetShaderInfoLog(gl_shader_number,
-                         sizeof(info_log) / sizeof(info_log[0]), &returned_size,
-                         info_log);
+    glGetShaderInfoLog(gl_shader_number, sizeof(info_log) / sizeof(info_log[0]),
+                       &returned_size, info_log);
+    if (returned_size) {
       std::cerr << "GL compile shader " << shader_filename << ": " << info_log
                 << std::endl;
+    }
+
+    if (was_compiled != GL_TRUE) {
       std::cerr << "Could not compile shader from " << shader_filename
                 << std::endl
                 << shader_source_string << std::endl;
     }
-    clear_gl_errors();
   }
 };
 
@@ -133,13 +136,76 @@ struct helio_gl_program {
     glGetProgramInfoLog(gl_program_number,
                         sizeof(info_log) / sizeof(info_log[0]), &returned_size,
                         info_log);
-    GLint status = 0;
+    if (returned_size) {
+      std::cerr << "GL link_gl_program notes " << info_log << std::endl;
+    }
+
+    GLint status = GL_FALSE;
     glGetProgramiv(gl_program_number, GL_LINK_STATUS, &status);
 
     if (status != GL_TRUE) {
-      std::cerr << "GL link_gl_program " << gl_program_number << " " << info_log
+      std::cerr << "GL link_gl_program failed " << gl_program_number
                 << std::endl;
     }
+    clear_gl_errors();
+  }
+};
+
+struct helio_gl_rainbow {
+  helio_gl_program gl_program;
+  GLuint position_attrib_number;
+  GLuint background_uniform_number;
+  GLuint wobble_uniform_number;
+  GLuint resolution_uniform_number;
+
+  void init_rainbow() {
+    clear_gl_errors();
+
+    GLfloat vertex_buffer_data[] = {
+        -1, -1, -1, +1, +1, +1, +1, +1, +1, -1, -1, -1,
+    };
+    gl_program.init_gl_program();
+    gl_program.add_shader("rainbow_gl_vertex.glsl", GL_VERTEX_SHADER);
+    gl_program.add_shader("rainbow_gl_fragment.glsl", GL_FRAGMENT_SHADER);
+    gl_program.link_gl_program();
+
+    position_attrib_number =
+        glGetAttribLocation(gl_program.gl_program_number, "position");
+    background_uniform_number =
+        glGetUniformLocation(gl_program.gl_program_number, "background");
+    wobble_uniform_number =
+        glGetUniformLocation(gl_program.gl_program_number, "wobble");
+    resolution_uniform_number =
+        glGetUniformLocation(gl_program.gl_program_number, "resolution");
+
+    GLuint vertex_buffer_number;
+    glGenBuffers(1, &vertex_buffer_number);
+    glBindBuffer(GL_ARRAY_BUFFER, vertex_buffer_number);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertex_buffer_data),
+                 vertex_buffer_data, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(position_attrib_number);
+    glVertexAttribPointer(position_attrib_number, 2, GL_FLOAT, GL_FALSE, 0,
+                          nullptr);
+
+    glUseProgram(gl_program.gl_program_number);
+
+    GLint vp[4];
+    glGetIntegerv(GL_VIEWPORT, vp);
+    glUniform2f(resolution_uniform_number, vp[2], vp[3]);
+  }
+
+  void render_rainbow(float background_r, float background_g,
+                      float background_b) {
+    glUniform1f(
+        wobble_uniform_number,
+        std::fmod(std::chrono::duration_cast<std::chrono::milliseconds>(
+                      std::chrono::system_clock::now().time_since_epoch())
+                          .count() *
+                      0.001,
+                  M_PI * 2));
+    glUniform3f(background_uniform_number, background_r, background_g,
+                background_b);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
     clear_gl_errors();
   }
 };
@@ -210,7 +276,7 @@ struct context {
   GLclampf background_g;
   GLclampf background_b;
 
-  helio_gl_program gl_program;
+  helio_gl_rainbow gl_rainbow;
 
   context(boost::program_options::variables_map &vm_)
       : vm(vm_), background_r(0), background_g(0), background_b(0) {}
@@ -402,8 +468,7 @@ struct context {
     case AF_INET: {
       char namebuf[INET_ADDRSTRLEN];
       auto sa = static_cast<const sockaddr_in *>(addr);
-      if (evutil_inet_ntop(AF_INET, &sa->sin_addr, namebuf, sizeof(namebuf)) <
-          0) {
+      if (!evutil_inet_ntop(AF_INET, &sa->sin_addr, namebuf, sizeof(namebuf))) {
         std::cerr << "evutil_inet_ntop AF_INET "
                   << evutil_socket_error_to_string(EVUTIL_SOCKET_ERROR())
                   << std::endl;
@@ -415,8 +480,7 @@ struct context {
     case AF_INET6: {
       char namebuf[INET6_ADDRSTRLEN];
       auto sa = static_cast<const sockaddr_in6 *>(addr);
-      if (evutil_inet_ntop(AF_INET6, &sa->sin6_addr, namebuf, sizeof(namebuf)) <
-          0) {
+      if (!evutil_inet_ntop(AF_INET6, &sa->sin6_addr, namebuf, sizeof(namebuf))) {
         std::cerr << "evutil_inet_ntop AF_INET6 "
                   << evutil_socket_error_to_string(EVUTIL_SOCKET_ERROR())
                   << std::endl;
@@ -722,44 +786,14 @@ struct context {
     std::cout << "setup_opengl_thread GL " << glGetString(GL_VERSION)
               << std::endl;
     clear_gl_errors();
-    gl_program.init_gl_program();
-
-    gl_program.add_shader("gl_vertex_shader.shader", GL_VERTEX_SHADER);
-    gl_program.add_shader("gl_fragment_shader.shader", GL_FRAGMENT_SHADER);
-    gl_program.link_gl_program();
+    gl_rainbow.init_rainbow();
   }
 
   void render_frame_with_opengl() {
     clear_gl_errors();
-    glClearColor(background_r, background_g, background_b, 1.0);
-    glClear(GL_COLOR_BUFFER_BIT);
 
-    /*
-    GLfloat vertex_buffer_data[] = {
-	-1,-1,    
-	-1,+1, 
-	+1,+1,
-	+1,+1,
-	+1,-1,  
-	-1,-1,  
-    };
+    gl_rainbow.render_rainbow(background_r, background_g, background_b);
 
-    GLuint location =
-        glGetAttribLocation(gl_program.gl_program_number, "position");
-
-    GLuint vertex_buffer_number;
-    glGenBuffers(1, &vertex_buffer_number);
-    glBindBuffer(GL_ARRAY_BUFFER, vertex_buffer_number);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(vertex_buffer_data),
-                 vertex_buffer_data, GL_STATIC_DRAW);
-
-    glUseProgram(gl_program.gl_program_number);
-    glEnableVertexAttribArray(location);
-    glVertexAttribPointer(location, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
-    glDrawArrays(GL_TRIANGLES, 0, 6);
-    clear_gl_errors();
-    */
-    
     glFinish();
     clear_gl_errors();
   }
