@@ -6,10 +6,9 @@ clean:
 
 .PHONY: all clean
 
-
 pkg_cflags := $(shell pkg-config --cflags sdl2 SDL2_mixer glew)
 pkg_libs := $(shell pkg-config --libs sdl2 SDL2_mixer glew)
-glew_libs := $(shell pkg-config --libs glew)
+
 override CXXFLAGS += $(pkg_cflags)
 override LDFLAGS += $(pkg_libs) -lboost_program_options -levent -pthread
 
