@@ -874,6 +874,8 @@ int main(int argc, char *argv[]) {
     }
     SDL_DisplayMode display_mode;
 
+    SDL_DisableScreenSaver();
+    
     ret = SDL_GetCurrentDisplayMode(0, &display_mode);
     if (ret < 0) {
       std::cerr << "SDL_GetCurrentDisplayMode " << ret << " " << SDL_GetError()
