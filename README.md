@@ -35,12 +35,7 @@ Mac OSX
 
 - If you don't have homebrew, install it: http://brew.sh/
 
-- brew install sdl2
-- brew install sdl_mixer
-- brew install boost
-- brew install libevent
-- brew install glew
-- brew install pkg-config
+- make brew-install
 
 - make LDFLAGS="-framework OpenGL"
 
