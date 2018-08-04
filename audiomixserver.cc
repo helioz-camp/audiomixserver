@@ -151,12 +151,124 @@ struct helio_gl_program {
   }
 };
 
+struct helio_gl_lozenge 
+{
+  helio_gl_program gl_program;
+  GLuint position_attrib_number;
+  GLuint lozenge_center_uniform_number;
+  GLuint lozenge_size_uniform_number;
+  GLuint lozenge_color_uniform_number;
+  GLuint lozenge_body_width_uniform_number;
+  GLuint vertex_buffer_number;
+  GLint gl_viewport_dimensions[4];
+  float display_ratio;
+  
+  float const body_radius = 0.03;
+  float const vertical_spacing = 0.02;
+  std::string lozenge_message; 
+  
+  void init_lozenge() {
+    clear_gl_errors();
+
+    GLfloat vertex_buffer_data[] = {
+        -1, -1, -1, +1, +1, +1, +1, +1, +1, -1, -1, -1,
+    };
+    gl_program.init_gl_program();
+    gl_program.add_shader("lozenge_gl_vertex.glsl", GL_VERTEX_SHADER);
+    gl_program.add_shader("lozenge_gl_fragment.glsl", GL_FRAGMENT_SHADER);
+    gl_program.link_gl_program();
+
+    position_attrib_number =
+        glGetAttribLocation(gl_program.gl_program_number, "position");
+    lozenge_center_uniform_number =
+        glGetUniformLocation(gl_program.gl_program_number, "lozenge_center");
+    lozenge_size_uniform_number =
+        glGetUniformLocation(gl_program.gl_program_number, "lozenge_size");
+    lozenge_body_width_uniform_number =
+        glGetUniformLocation(gl_program.gl_program_number, "lozenge_body_width");
+    lozenge_color_uniform_number =
+        glGetUniformLocation(gl_program.gl_program_number, "lozenge_color");
+
+    GLuint vertex_buffer_number;
+    glGenBuffers(1, &vertex_buffer_number);
+    glBindBuffer(GL_ARRAY_BUFFER, vertex_buffer_number);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertex_buffer_data),
+                 vertex_buffer_data, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(position_attrib_number);
+    glVertexAttribPointer(position_attrib_number, 2, GL_FLOAT, GL_FALSE, 0,
+                          nullptr);
+    glGetIntegerv(GL_VIEWPORT, gl_viewport_dimensions);
+    display_ratio = gl_viewport_dimensions[2] / float(gl_viewport_dimensions[3]);
+  }
+
+  void render_lozenges() {
+    glUseProgram(gl_program.gl_program_number);
+    glEnableVertexAttribArray(position_attrib_number);
+    glBindBuffer(GL_ARRAY_BUFFER, vertex_buffer_number);
+
+    uint32_t unsigned_colors[] = { 0xEF5A5C, 0xFFB259, 0xFFDD4A, 0x83CA76, 0x6698F2, 0x9473C8 };
+    unsigned color_index = 0;
+    float left_x = -1;
+    float top_y = 1;
+    float gap_spacing = 0.5 * body_radius;
+    float extra_word_spacing = 3.5 * body_radius;
+    
+    float dash_body_width = 2;
+    std::istringstream iss{lozenge_message};
+    std::string word;
+    while (iss >> word) {
+      float word_width = (word.size()-1) * gap_spacing
+        + 2 * std::count(word.begin(), word.end(), '-') * dash_body_width * body_radius
+        + 2 * word.size() * body_radius;
+      if (left_x != -1 && word_width + left_x > 1.0) {
+        left_x = -1;
+        top_y -= (vertical_spacing + 2 * body_radius) * display_ratio;      
+      }
+      
+      for (auto c : word) {
+        float body_width = (c == '-') ? dash_body_width : 0;
+        auto width = (body_width + 1) * 2 * body_radius;
+        render_lozenge_position(
+                                left_x + width/2,
+                                top_y - body_radius*display_ratio,
+                                unsigned_colors[color_index],
+                                body_width);
+
+        left_x += width + gap_spacing;
+      }
+      left_x += extra_word_spacing;
+
+      if (++color_index >= sizeof(unsigned_colors)/sizeof(unsigned_colors[0])) {
+        color_index = 0;
+      }
+    }
+  }
+
+  void render_lozenge_position(float x, float y, uint32_t unsigned_color, float body_width) {
+    glUniform2f(lozenge_center_uniform_number, x, y);
+    glUniform2f(lozenge_size_uniform_number, body_radius * (1 + body_width), body_radius * display_ratio);
+    glUniform1f(lozenge_body_width_uniform_number, body_width);
+
+    glUniform3f(lozenge_color_uniform_number,
+                (0xff & (unsigned_color >> 16))/255.,
+                (0xff & (unsigned_color >> 8))/255.,
+                (0xff & (unsigned_color >> 0))/255.
+                );
+
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    clear_gl_errors();
+  }
+  
+};
+  
+  
 struct helio_gl_rainbow {
   helio_gl_program gl_program;
   GLuint position_attrib_number;
   GLuint background_uniform_number;
   GLuint wobble_uniform_number;
   GLuint resolution_uniform_number;
+  GLuint vertex_buffer_number;
 
   void init_rainbow() {
     clear_gl_errors();
@@ -178,7 +290,6 @@ struct helio_gl_rainbow {
     resolution_uniform_number =
         glGetUniformLocation(gl_program.gl_program_number, "resolution");
 
-    GLuint vertex_buffer_number;
     glGenBuffers(1, &vertex_buffer_number);
     glBindBuffer(GL_ARRAY_BUFFER, vertex_buffer_number);
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertex_buffer_data),
@@ -196,6 +307,9 @@ struct helio_gl_rainbow {
 
   void render_rainbow(float background_r, float background_g,
                       float background_b) {
+    glUseProgram(gl_program.gl_program_number);
+    glEnableVertexAttribArray(position_attrib_number);
+    glBindBuffer(GL_ARRAY_BUFFER, vertex_buffer_number);
     glUniform1f(
         wobble_uniform_number,
         std::fmod(std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -277,6 +391,7 @@ struct context {
   GLclampf background_b;
 
   helio_gl_rainbow gl_rainbow;
+  helio_gl_lozenge gl_lozenge;
 
   context(boost::program_options::variables_map &vm_)
       : vm(vm_), background_r(0), background_g(0), background_b(0) {}
@@ -317,6 +432,8 @@ struct context {
   }
 
   sequence_t play_morse(std::string const &morse) {
+    gl_lozenge.lozenge_message = morse;
+    
     auto dot = name_to_chunk("morse_dot.mp3");
     auto dash = name_to_chunk("morse_dash.mp3");
     auto space = name_to_chunk("morse_space.mp3");
@@ -788,12 +905,18 @@ struct context {
               << std::endl;
     clear_gl_errors();
     gl_rainbow.init_rainbow();
+    gl_lozenge.init_lozenge();
   }
 
   void render_frame_with_opengl() {
     clear_gl_errors();
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
+    glClearColor(background_r, background_g, background_b, 1.0);
+    glClear(GL_COLOR_BUFFER_BIT);
 
     gl_rainbow.render_rainbow(background_r, background_g, background_b);
+    gl_lozenge.render_lozenges();
 
     glFinish();
     clear_gl_errors();
