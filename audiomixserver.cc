@@ -434,10 +434,10 @@ struct context {
   sequence_t play_morse(std::string const &morse) {
     gl_lozenge.lozenge_message = morse;
     
-    auto dot = name_to_chunk("morse_dot.mp3");
-    auto dash = name_to_chunk("morse_dash.mp3");
-    auto space = name_to_chunk("morse_space.mp3");
-    auto gap = name_to_chunk("morse_gap.mp3");
+    auto dot = load_to_chunk("morse_dot.wav");
+    auto dash = load_to_chunk("morse_dash.wav");
+    auto space = load_to_chunk("morse_space.wav");
+    auto gap = load_to_chunk("morse_gap.wav");
 
     lock_sdl_audio _;
     sequence_status *last_status = nullptr;
@@ -921,6 +921,34 @@ struct context {
     glFinish();
     clear_gl_errors();
   }
+
+  void maybe_load_file_from_name(std::string const& file) {
+    if (chunks.find(file) != chunks.end()) {
+      return;
+    }
+    std::cout << "Loading " << file << std::endl;
+    auto chunk = Mix_LoadWAV(file.c_str());
+    if (!chunk) {
+      std::cerr << "Could not load " << file << ": " << Mix_GetError()
+                << std::endl;
+      return;
+    }
+    
+    chunks[file] = chunk;
+    ordered_chunks.push_back(chunk);
+  }
+
+  void load_audio_from_filenames(std::vector<std::string> const& filenames) {  
+    for (auto &file : filenames) {
+      maybe_load_file_from_name(file);
+    }
+  }
+
+  Mix_Chunk *load_to_chunk(std::string const &name) {
+    maybe_load_file_from_name(name);
+
+    return name_to_chunk(name);
+  }
 };
 
 context *global_ctx;
@@ -1035,18 +1063,7 @@ int main(int argc, char *argv[]) {
   Mix_ChannelFinished(finished_channel);
 
   if (vm.count("sample-files")) {
-    for (auto &file : vm["sample-files"].as<std::vector<std::string>>()) {
-      std::cout << "Loading " << file << std::endl;
-      auto chunk = Mix_LoadWAV(file.c_str());
-      if (!chunk) {
-        std::cerr << "Could not load " << file << ": " << Mix_GetError()
-                  << std::endl;
-        continue;
-      }
-
-      ctx.chunks[file] = chunk;
-      ctx.ordered_chunks.push_back(chunk);
-    }
+    ctx.load_audio_from_filenames(vm["sample-files"].as<std::vector<std::string>>());
   }
 
   if (!event_init()) {
