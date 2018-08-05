@@ -5,11 +5,12 @@ Uses
 
 - SDL2
 - libevent
+- OpenGL (via libglew)
 - boost program options
 
 Ubuntu
 
-- apt-get install libevent-dev libboost-program-options-dev libsdl2-mixer-dev
+- sudo make apt-install
 
 - make
 
