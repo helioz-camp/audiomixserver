@@ -120,8 +120,8 @@ struct helio_gl_program {
   }
 
   template <typename... Params> void add_shader(Params &&... params) {
-    auto &shader = gl_program_shaders.emplace_back(params...);
-    compile_and_attach_shader(shader);
+    gl_program_shaders.emplace_back(params...);
+    compile_and_attach_shader(gl_program_shaders.back());
   }
 
   void compile_and_attach_shader(helio_gl_shader &shader) {
