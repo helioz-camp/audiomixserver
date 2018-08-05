@@ -25,7 +25,7 @@
 #include "GL/glew.h"
 
 namespace {
-typedef unsigned long sequence_t;
+typedef uint64_t sequence_t;
 
 std::unordered_map<char, std::string> const &character_to_morse{
     {'\n', ".-.-"},   {' ', " "},      {'!', "---."},   {'\"', ".-..-."},
@@ -377,7 +377,7 @@ struct lock_sdl_audio {
 
 struct context {
   std::unordered_map<std::string, Mix_Chunk *> chunks;
-  std::unordered_map<std::string, unsigned long> client_tokens;
+  std::unordered_map<std::string, uint64_t> client_tokens;
   std::vector<Mix_Chunk *> ordered_chunks;
   boost::program_options::variables_map &vm;
   struct event udp_event;
@@ -628,7 +628,7 @@ struct context {
     auto params = uri_params(uri);
     auto get_sequence = [&]() -> sequence_t {
       try {
-        return std::stoul(params["sequence"]);
+        return std::stoull(params["sequence"]);
       } catch (std::exception &e) {
         std::cerr << "Parse failed for " << path << ": " << e.what()
                   << std::endl;
@@ -774,7 +774,7 @@ struct context {
 
     std::ostringstream out;
 
-    unsigned long client_token_number = std::stoul(client_token);
+    auto client_token_number = std::stoull(client_token);
 
     auto remote = remote_address(addr, addr_len);
     std::cout << "Received UDP request from " << remote << " for " << client
