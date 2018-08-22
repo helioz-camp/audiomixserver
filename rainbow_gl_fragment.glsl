@@ -17,11 +17,12 @@ void main() {
   vec3 rgb = background;
 
   if (h > 0. && h < 1.) {
-     float hue = .85*(mix(h, 1. - (1. - h*h), .5));
+     float inverse_h = 1. - h;
+     float hue = .85*(mix(inverse_h, 1. - (1. - inverse_h*inverse_h), .5));
      float sat = 1.;
      float lum = clamp(atan(uv.y, uv.x) + .2, 0., 1.);
      rgb = hsv2rgb(vec3(hue,sat,lum));
-     rgb = mix(background, rgb,  clamp(min(h, 1.-h)*100., 0., 1.));
+     rgb = mix(background, rgb,  clamp(min(h, 1.-inverse_h)*100., 0., 1.));
   }
 	
   gl_FragColor = vec4(rgb, 1. );
