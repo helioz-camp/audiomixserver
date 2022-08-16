@@ -9,6 +9,10 @@
 #include <thread>
 #include <unordered_map>
 
+#include <assimp/scene.h>
+#include <assimp/postprocess.h>
+#include <assimp/Importer.hpp>
+
 #include "SDL.h"
 #include "SDL_mixer.h"
 
@@ -943,6 +947,19 @@ struct context {
       maybe_load_file_from_name(file);
     }
   }
+  void load_3d_models_from_paths(std::vector<std::string> const& filenames) {  
+    Assimp::Importer importer;
+
+    for (auto &file : filenames) {
+      const aiScene* scene = importer.ReadFile(file,
+            aiProcess_GenSmoothNormals |
+            aiProcess_CalcTangentSpace |
+            aiProcess_Triangulate |
+            aiProcess_JoinIdenticalVertices |
+            aiProcess_SortByPType);
+      std::cout << "load_3d_models_from_paths " <<file << std::endl;
+    }
+  }
 
   Mix_Chunk *load_to_chunk(std::string const &name) {
     maybe_load_file_from_name(name);
@@ -979,7 +996,8 @@ int main(int argc, char *argv[]) {
       "bind_port_udp", po::value<int>()->default_value(13231),
       "Port to listen on for UDP")("visuals",
                                    po::value<bool>()->default_value(true),
-                                   "Open GL visualisations");
+                                   "Open GL visualisations")(
+                                                             "3d-model-paths", po::value<std::vector<std::string>>(), "paths to 3D model files");
 
   po::variables_map vm;
   po::positional_options_description p;
@@ -1066,6 +1084,10 @@ int main(int argc, char *argv[]) {
     ctx.load_audio_from_filenames(vm["sample-files"].as<std::vector<std::string>>());
   }
 
+  if (vm.count("3d-model-paths")) {
+    ctx.load_3d_models_from_paths(vm["3d-model-paths"].as<std::vector<std::string>>());
+  }
+  
   if (!event_init()) {
     std::cerr << "event_init" << std::endl;
     return 5;

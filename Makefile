@@ -6,8 +6,9 @@ clean:
 
 .PHONY: all clean brew-install apt-install
 
-pkg_cflags := $(shell pkg-config --cflags sdl2 SDL2_mixer glew)
-pkg_libs := $(shell pkg-config --libs sdl2 SDL2_mixer glew)
+pkgs = sdl2 SDL2_mixer glew assimp
+pkg_cflags := $(shell pkg-config --cflags $(pkgs))
+pkg_libs := $(shell pkg-config --libs $(pkgs))
 
 override CXXFLAGS += $(pkg_cflags)
 override LDFLAGS += $(pkg_libs) -lboost_program_options -levent -pthread
