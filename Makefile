@@ -6,7 +6,7 @@ clean:
 
 .PHONY: all clean brew-install apt-install
 
-pkgs = sdl2 SDL2_mixer glew assimp
+pkgs = sdl2 SDL2_mixer glew assimp glm
 pkg_cflags := $(shell pkg-config --cflags $(pkgs))
 pkg_libs := $(shell pkg-config --libs $(pkgs))
 

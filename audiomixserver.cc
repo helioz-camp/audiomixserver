@@ -27,6 +27,7 @@
 #include "event2/keyvalq_struct.h"
 
 #include "GL/glew.h"
+#include <glm/glm.hpp>
 
 namespace {
 typedef uint64_t sequence_t;
@@ -957,7 +958,30 @@ struct context {
             aiProcess_Triangulate |
             aiProcess_JoinIdenticalVertices |
             aiProcess_SortByPType);
-      std::cout << "load_3d_models_from_paths " <<file << std::endl;
+      if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE ||
+          !scene->mRootNode) {
+        std::cerr << "load_3d_models_from_paths failed " << file << " error "
+                  << importer.GetErrorString() << std::endl;
+        continue;
+      }
+      std::cout << "load_3d_models_from_paths " <<file << " meshes " << scene->mNumMeshes << std::endl;
+      for (unsigned n = 0; scene->mNumMeshes > n; ++n) {
+        auto mesh = scene->mMeshes[n];
+        std::vector<glm::vec3> vertices;
+        std::vector<int32_t> indices;
+        for (unsigned v = 0; mesh->mNumVertices > v; ++v) {
+          auto const&p = mesh->mVertices[v];
+          vertices.push_back({p.x, p.y, p.z});
+        }
+        for (unsigned f = 0; mesh->mNumFaces > f; ++f) {
+          auto const&face = mesh->mFaces[f];
+          for (unsigned i = 0; face.mNumIndices > i; ++i) {
+            indices.push_back(face.mIndices[i]);
+          }
+        }
+
+        std::cout << "mesh " << vertices.size() << " " << indices.size() << std::endl;
+      }
     }
   }
 
