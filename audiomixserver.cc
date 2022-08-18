@@ -329,6 +329,35 @@ struct helio_gl_rainbow {
   }
 };
 
+struct helio_sprite {
+  GLuint sprite_vertex_buffer_number;
+  GLuint sprite_index_buffer_number;
+
+  void load_sprite_into_gl(std::vector<glm::vec3> const &vertices,
+                      std::vector<uint32_t> const &indices) {
+    clear_gl_errors();
+    
+    glGenBuffers(1, &sprite_vertex_buffer_number);
+    glBindBuffer(GL_ARRAY_BUFFER, sprite_vertex_buffer_number);
+    glBufferData(GL_ARRAY_BUFFER,
+                 sizeof(vertices[0])*vertices.size(),
+                 &vertices[0], GL_STATIC_DRAW);
+
+    glGenBuffers(1, &sprite_index_buffer_number);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, sprite_index_buffer_number);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER,
+                 sizeof(indices[0])*indices.size(),
+                 &indices[0], GL_STATIC_DRAW);
+    
+    clear_gl_errors();
+  }
+};
+
+struct helio_gl_sprites {
+  helio_gl_program gl_program;
+  std::vector<helio_sprite> sprites;
+};
+
 struct sequence_status {
   Mix_Chunk *sequence_chunk;
   int sequence_channel;
@@ -397,6 +426,7 @@ struct context {
 
   helio_gl_rainbow gl_rainbow;
   helio_gl_lozenge gl_lozenge;
+  helio_gl_sprites gl_sprites;
 
   context(boost::program_options::variables_map &vm_)
       : vm(vm_), background_r(0), background_g(0), background_b(0) {}
@@ -965,10 +995,11 @@ struct context {
         continue;
       }
       std::cout << "load_3d_models_from_paths " <<file << " meshes " << scene->mNumMeshes << std::endl;
+      std::vector<glm::vec3> vertices;
+      std::vector<uint32_t> indices;
       for (unsigned n = 0; scene->mNumMeshes > n; ++n) {
+        unsigned base_index = vertices.size();
         auto mesh = scene->mMeshes[n];
-        std::vector<glm::vec3> vertices;
-        std::vector<int32_t> indices;
         for (unsigned v = 0; mesh->mNumVertices > v; ++v) {
           auto const&p = mesh->mVertices[v];
           vertices.push_back({p.x, p.y, p.z});
@@ -976,12 +1007,17 @@ struct context {
         for (unsigned f = 0; mesh->mNumFaces > f; ++f) {
           auto const&face = mesh->mFaces[f];
           for (unsigned i = 0; face.mNumIndices > i; ++i) {
-            indices.push_back(face.mIndices[i]);
+            indices.push_back(face.mIndices[i] + base_index);
           }
         }
-
-        std::cout << "mesh " << vertices.size() << " " << indices.size() << std::endl;
       }
+      helio_sprite sprite;
+
+      sprite.load_sprite_into_gl(vertices, indices);
+      gl_sprites.sprites.emplace_back(std::move(sprite));
+      
+      std::cout << "meshes " << scene->mNumMeshes << " vertices " << vertices.size() << " indices " << indices.size() << std::endl;
+      
     }
   }
 
