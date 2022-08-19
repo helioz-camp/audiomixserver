@@ -356,6 +356,19 @@ struct helio_sprite {
 struct helio_gl_sprites {
   helio_gl_program gl_program;
   std::vector<helio_sprite> sprites;
+
+  void init_sprites() {
+    clear_gl_errors();
+    gl_program.init_gl_program();
+    gl_program.add_shader("sprite_gl_vertex.glsl", GL_VERTEX_SHADER);
+    gl_program.add_shader("sprite_gl_fragment.glsl", GL_FRAGMENT_SHADER);
+    gl_program.link_gl_program();
+    clear_gl_errors();
+  }
+
+  void render_sprites() {
+    clear_gl_errors();
+  }
 };
 
 struct sequence_status {
@@ -941,6 +954,7 @@ struct context {
     clear_gl_errors();
     gl_rainbow.init_rainbow();
     gl_lozenge.init_lozenge();
+    gl_sprites.init_sprites();
   }
 
   void render_frame_with_opengl() {
@@ -952,6 +966,7 @@ struct context {
 
     gl_rainbow.render_rainbow(background_r, background_g, background_b);
     gl_lozenge.render_lozenges();
+    gl_sprites.render_sprites();
 
     glFinish();
     clear_gl_errors();
