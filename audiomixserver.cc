@@ -8,6 +8,7 @@
 #include <random>
 #include <thread>
 #include <unordered_map>
+#include <limits>
 
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
@@ -28,6 +29,9 @@
 
 #include "GL/glew.h"
 #include <glm/glm.hpp>
+#include <glm/gtc/type_ptr.hpp>
+#include <glm/ext.hpp>
+#include <glm/gtx/string_cast.hpp>
 
 namespace {
 typedef uint64_t sequence_t;
@@ -54,7 +58,7 @@ void clear_gl_errors_helper(char const *function, int line) {
 
   if (err != GL_NO_ERROR) {
     std::cerr << __FILE__ << ":" << line << " in " << function
-              << " check_gl_error " << err << std::endl;
+              << " check_gl_error " << err << " " << gluErrorString(err) << std::endl;
     clear_gl_errors_helper(function, line);
   }
 }
@@ -332,6 +336,7 @@ struct helio_gl_rainbow {
 struct helio_sprite {
   GLuint sprite_vertex_buffer_number;
   GLuint sprite_index_buffer_number;
+  GLuint sprite_indices_count;
 
   void load_sprite_into_gl(std::vector<glm::vec3> const &vertices,
                       std::vector<uint32_t> const &indices) {
@@ -348,7 +353,16 @@ struct helio_sprite {
     glBufferData(GL_ELEMENT_ARRAY_BUFFER,
                  sizeof(indices[0])*indices.size(),
                  &indices[0], GL_STATIC_DRAW);
-    
+
+    sprite_indices_count = indices.size();
+    clear_gl_errors();
+  }
+
+  void render_one_sprite() {
+    clear_gl_errors();
+    glBindBuffer(GL_ARRAY_BUFFER, sprite_vertex_buffer_number);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, sprite_index_buffer_number); 
+    glDrawElements(GL_TRIANGLES, sprite_indices_count, GL_UNSIGNED_INT, 0);
     clear_gl_errors();
   }
 };
@@ -356,6 +370,11 @@ struct helio_sprite {
 struct helio_gl_sprites {
   helio_gl_program gl_program;
   std::vector<helio_sprite> sprites;
+  GLuint sprite_position_attrib_number;
+  GLuint sprite_model_uniform_number;
+  GLuint sprite_view_uniform_number;
+  GLuint sprite_projection_uniform_number;
+  GLuint sprite_color_uniform_number;
 
   void init_sprites() {
     clear_gl_errors();
@@ -363,11 +382,42 @@ struct helio_gl_sprites {
     gl_program.add_shader("sprite_gl_vertex.glsl", GL_VERTEX_SHADER);
     gl_program.add_shader("sprite_gl_fragment.glsl", GL_FRAGMENT_SHADER);
     gl_program.link_gl_program();
+    sprite_position_attrib_number = 
+        glGetAttribLocation(gl_program.gl_program_number, "sprite_position");
+    sprite_model_uniform_number =
+        glGetUniformLocation(gl_program.gl_program_number, "sprite_model");
+    sprite_view_uniform_number =
+        glGetUniformLocation(gl_program.gl_program_number, "sprite_view");
+    sprite_projection_uniform_number =
+        glGetUniformLocation(gl_program.gl_program_number, "sprite_projection");
+    sprite_color_uniform_number =
+        glGetUniformLocation(gl_program.gl_program_number, "sprite_color");
+
     clear_gl_errors();
   }
 
   void render_sprites() {
     clear_gl_errors();
+    glUseProgram(gl_program.gl_program_number);
+    glEnableVertexAttribArray(sprite_position_attrib_number);
+    auto matrix = glm::mat4(1.0f);
+    
+    glUniformMatrix4fv(sprite_model_uniform_number, 1, GL_FALSE, glm::value_ptr(matrix));
+    glUniformMatrix4fv(sprite_view_uniform_number, 1, GL_FALSE, glm::value_ptr(matrix));    
+    glUniformMatrix4fv(sprite_projection_uniform_number, 1, GL_FALSE, glm::value_ptr(matrix));
+    unsigned unsigned_color = 0xffffff;
+    
+    glUniform3f(sprite_color_uniform_number,
+                (0xff & (unsigned_color >> 16))/255.,
+                (0xff & (unsigned_color >> 8))/255.,
+                (0xff & (unsigned_color >> 0))/255.
+                );
+    
+    for (auto &sprite: sprites) {
+      sprite.render_one_sprite();
+    }
+
+    clear_gl_errors();    
   }
 };
 
@@ -1012,12 +1062,18 @@ struct context {
       std::cout << "load_3d_models_from_paths " <<file << " meshes " << scene->mNumMeshes << std::endl;
       std::vector<glm::vec3> vertices;
       std::vector<uint32_t> indices;
+      glm::vec3 min(std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), std::numeric_limits<float>::max());
+      glm::vec3 max(std::numeric_limits<float>::min(), std::numeric_limits<float>::min(), std::numeric_limits<float>::min());
       for (unsigned n = 0; scene->mNumMeshes > n; ++n) {
         unsigned base_index = vertices.size();
         auto mesh = scene->mMeshes[n];
         for (unsigned v = 0; mesh->mNumVertices > v; ++v) {
           auto const&p = mesh->mVertices[v];
-          vertices.push_back({p.x, p.y, p.z});
+          glm::vec3 g(p.x, p.y, p.z);
+          min = glm::min(min, g);
+          max = glm::max(max, g);
+          
+          vertices.push_back(g);
         }
         for (unsigned f = 0; mesh->mNumFaces > f; ++f) {
           auto const&face = mesh->mFaces[f];
@@ -1031,7 +1087,7 @@ struct context {
       sprite.load_sprite_into_gl(vertices, indices);
       gl_sprites.sprites.emplace_back(std::move(sprite));
       
-      std::cout << "meshes " << scene->mNumMeshes << " vertices " << vertices.size() << " indices " << indices.size() << std::endl;
+      std::cout << "meshes " << scene->mNumMeshes << " vertices " << vertices.size() << " indices " << indices.size() << " min " << glm::to_string(min) << " max " << glm::to_string(max) << std::endl;
       
     }
   }
