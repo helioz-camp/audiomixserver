@@ -23,8 +23,10 @@ void main() {
      float lum = clamp(atan(uv.y, uv.x) + .2, 0., 1.);
      rgb = hsv2rgb(vec3(hue,sat,lum));
      rgb = mix(background, rgb,  clamp(min(h, 1.-inverse_h)*100., 0., 1.));
+     gl_FragColor = vec4(rgb, 0.25);
+  } else {
+    gl_FragColor = vec4(0,0,0,0);
   }
 	
-  gl_FragColor = vec4(rgb, 1. );
 }
   

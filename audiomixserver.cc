@@ -198,22 +198,21 @@ struct helio_gl_lozenge
     lozenge_color_uniform_number =
         glGetUniformLocation(gl_program.gl_program_number, "lozenge_color");
 
-    GLuint vertex_buffer_number;
     glGenBuffers(1, &vertex_buffer_number);
     glBindBuffer(GL_ARRAY_BUFFER, vertex_buffer_number);
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertex_buffer_data),
                  vertex_buffer_data, GL_STATIC_DRAW);
-    glEnableVertexAttribArray(position_attrib_number);
-    glVertexAttribPointer(position_attrib_number, 2, GL_FLOAT, GL_FALSE, 0,
-                          nullptr);
     glGetIntegerv(GL_VIEWPORT, gl_viewport_dimensions);
     display_ratio = gl_viewport_dimensions[2] / float(gl_viewport_dimensions[3]);
+    clear_gl_errors();
   }
 
   void render_lozenges() {
     glUseProgram(gl_program.gl_program_number);
     glEnableVertexAttribArray(position_attrib_number);
     glBindBuffer(GL_ARRAY_BUFFER, vertex_buffer_number);
+    glVertexAttribPointer(position_attrib_number, 2, GL_FLOAT, GL_FALSE, 0,
+                          nullptr);
 
     uint32_t unsigned_colors[] = { 0xEF5A5C, 0xFFB259, 0xFFDD4A, 0x83CA76, 0x6698F2, 0x9473C8 };
     unsigned color_index = 0;
@@ -251,6 +250,7 @@ struct helio_gl_lozenge
         color_index = 0;
       }
     }
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
   }
 
   void render_lozenge_position(float x, float y, uint32_t unsigned_color, float body_width) {
@@ -303,15 +303,13 @@ struct helio_gl_rainbow {
     glBindBuffer(GL_ARRAY_BUFFER, vertex_buffer_number);
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertex_buffer_data),
                  vertex_buffer_data, GL_STATIC_DRAW);
-    glEnableVertexAttribArray(position_attrib_number);
-    glVertexAttribPointer(position_attrib_number, 2, GL_FLOAT, GL_FALSE, 0,
-                          nullptr);
 
     glUseProgram(gl_program.gl_program_number);
 
     GLint vp[4];
     glGetIntegerv(GL_VIEWPORT, vp);
     glUniform2f(resolution_uniform_number, vp[2], vp[3]);
+    clear_gl_errors();
   }
 
   void render_rainbow(float background_r, float background_g,
@@ -319,6 +317,8 @@ struct helio_gl_rainbow {
     glUseProgram(gl_program.gl_program_number);
     glEnableVertexAttribArray(position_attrib_number);
     glBindBuffer(GL_ARRAY_BUFFER, vertex_buffer_number);
+    glVertexAttribPointer(position_attrib_number, 2, GL_FLOAT, GL_FALSE, 0,
+                          nullptr);
     glUniform1f(
         wobble_uniform_number,
         std::fmod(std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -329,40 +329,37 @@ struct helio_gl_rainbow {
     glUniform3f(background_uniform_number, background_r, background_g,
                 background_b);
     glDrawArrays(GL_TRIANGLES, 0, 6);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
     clear_gl_errors();
   }
 };
 
 struct helio_sprite {
   GLuint sprite_vertex_buffer_number;
-  GLuint sprite_index_buffer_number;
-  GLuint sprite_indices_count;
-
-  void load_sprite_into_gl(std::vector<glm::vec3> const &vertices,
-                      std::vector<uint32_t> const &indices) {
+  GLuint sprite_vertices_count;
+  std::vector<glm::vec3> sprite_vertices;
+  
+  void load_sprite_into_gl() {
     clear_gl_errors();
-    
+
     glGenBuffers(1, &sprite_vertex_buffer_number);
     glBindBuffer(GL_ARRAY_BUFFER, sprite_vertex_buffer_number);
     glBufferData(GL_ARRAY_BUFFER,
-                 sizeof(vertices[0])*vertices.size(),
-                 &vertices[0], GL_STATIC_DRAW);
+                 sizeof(sprite_vertices[0])*sprite_vertices.size(),
+                 &sprite_vertices[0], GL_STATIC_DRAW);
+    sprite_vertices_count = sprite_vertices.size();
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
 
-    glGenBuffers(1, &sprite_index_buffer_number);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, sprite_index_buffer_number);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER,
-                 sizeof(indices[0])*indices.size(),
-                 &indices[0], GL_STATIC_DRAW);
-
-    sprite_indices_count = indices.size();
     clear_gl_errors();
   }
 
-  void render_one_sprite() {
+  void render_one_sprite(GLuint sprite_position_attrib_number) {
     clear_gl_errors();
+    glEnableVertexAttribArray(sprite_position_attrib_number);
     glBindBuffer(GL_ARRAY_BUFFER, sprite_vertex_buffer_number);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, sprite_index_buffer_number); 
-    glDrawElements(GL_TRIANGLES, sprite_indices_count, GL_UNSIGNED_INT, 0);
+    glVertexAttribPointer(sprite_position_attrib_number, 3, GL_FLOAT, GL_FALSE, 0, 0);
+    
+    glDrawArrays(GL_TRIANGLES, 0, sprite_vertices_count);
     clear_gl_errors();
   }
 };
@@ -375,6 +372,7 @@ struct helio_gl_sprites {
   GLuint sprite_view_uniform_number;
   GLuint sprite_projection_uniform_number;
   GLuint sprite_color_uniform_number;
+  float display_ratio;
 
   void init_sprites() {
     clear_gl_errors();
@@ -394,18 +392,48 @@ struct helio_gl_sprites {
         glGetUniformLocation(gl_program.gl_program_number, "sprite_color");
 
     clear_gl_errors();
+
+    for (auto &sprite : sprites) {
+      sprite.load_sprite_into_gl();
+    }
+    
+    GLint gl_viewport_dimensions[4];
+    glGetIntegerv(GL_VIEWPORT, gl_viewport_dimensions);
+    display_ratio = gl_viewport_dimensions[2] / float(gl_viewport_dimensions[3]);
+
   }
 
   void render_sprites() {
     clear_gl_errors();
     glUseProgram(gl_program.gl_program_number);
-    glEnableVertexAttribArray(sprite_position_attrib_number);
-    auto matrix = glm::mat4(1.0f);
+
+    glm::mat4 model = glm::rotate(glm::mat4(1.0f),
+                        (float)std::fmod(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                                                        std::chrono::system_clock::now().time_since_epoch())
+                                  .count() *
+                                  0.001,
+                                  M_PI * 2), glm::vec3(-1.0f,-1.0f,1.0f));
+
     
-    glUniformMatrix4fv(sprite_model_uniform_number, 1, GL_FALSE, glm::value_ptr(matrix));
-    glUniformMatrix4fv(sprite_view_uniform_number, 1, GL_FALSE, glm::value_ptr(matrix));    
-    glUniformMatrix4fv(sprite_projection_uniform_number, 1, GL_FALSE, glm::value_ptr(matrix));
-    unsigned unsigned_color = 0xffffff;
+    glUniformMatrix4fv(sprite_model_uniform_number, 1, GL_FALSE,
+                       glm::value_ptr(model));
+
+    glUniformMatrix4fv(sprite_view_uniform_number, 1, GL_FALSE,
+                       glm::value_ptr(
+                                      glm::lookAt(
+                                                  glm::vec3(200.0f,200.0f,200.0f),
+                                                  glm::vec3(0,0,0),
+                                                  glm::vec3(0,1,0)
+                                                  ))
+                       );
+    glUniformMatrix4fv(sprite_projection_uniform_number, 1, GL_FALSE, glm::value_ptr(
+                                                                                     glm::perspective(
+                                                                                                      glm::radians(60.0f), 
+                                                                                                      display_ratio,    
+                                                                                                      0.1f,             
+                                                                                                      2000.0f          
+                                                                                                      )));
+    unsigned unsigned_color = 0xff00ff;
     
     glUniform3f(sprite_color_uniform_number,
                 (0xff & (unsigned_color >> 16))/255.,
@@ -414,7 +442,8 @@ struct helio_gl_sprites {
                 );
     
     for (auto &sprite: sprites) {
-      sprite.render_one_sprite();
+      //      std::cout << "render_sprite " << glm::to_string(model) << " " << glm::to_string(model*glm::vec4(sprite.sprite_vertices[200], 1.0f)) << std::endl;
+      sprite.render_one_sprite(sprite_position_attrib_number);
     }
 
     clear_gl_errors();    
@@ -1010,13 +1039,14 @@ struct context {
   void render_frame_with_opengl() {
     clear_gl_errors();
     glEnable(GL_BLEND);
+    //    glEnable(GL_DEPTH_TEST);  
     glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
     glClearColor(background_r, background_g, background_b, 1.0);
-    glClear(GL_COLOR_BUFFER_BIT);
+    glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
 
+    gl_sprites.render_sprites();
     gl_rainbow.render_rainbow(background_r, background_g, background_b);
     gl_lozenge.render_lozenges();
-    gl_sprites.render_sprites();
 
     glFinish();
     clear_gl_errors();
@@ -1060,34 +1090,27 @@ struct context {
         continue;
       }
       std::cout << "load_3d_models_from_paths " <<file << " meshes " << scene->mNumMeshes << std::endl;
-      std::vector<glm::vec3> vertices;
-      std::vector<uint32_t> indices;
+      std::vector<glm::vec3> output_vertices;
       glm::vec3 min(std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), std::numeric_limits<float>::max());
       glm::vec3 max(std::numeric_limits<float>::min(), std::numeric_limits<float>::min(), std::numeric_limits<float>::min());
       for (unsigned n = 0; scene->mNumMeshes > n; ++n) {
-        unsigned base_index = vertices.size();
         auto mesh = scene->mMeshes[n];
-        for (unsigned v = 0; mesh->mNumVertices > v; ++v) {
-          auto const&p = mesh->mVertices[v];
-          glm::vec3 g(p.x, p.y, p.z);
-          min = glm::min(min, g);
-          max = glm::max(max, g);
-          
-          vertices.push_back(g);
-        }
+
         for (unsigned f = 0; mesh->mNumFaces > f; ++f) {
           auto const&face = mesh->mFaces[f];
           for (unsigned i = 0; face.mNumIndices > i; ++i) {
-            indices.push_back(face.mIndices[i] + base_index);
+            auto const&p = mesh->mVertices[face.mIndices[i]];
+            glm::vec3 g(p.x, p.y, p.z);
+            min = glm::min(min, g);
+            max = glm::max(max, g);
+            output_vertices.push_back(g);
           }
         }
       }
-      helio_sprite sprite;
+      std::cout << "meshes " << scene->mNumMeshes << " output_vertices " << output_vertices.size() << " min " << glm::to_string(min) << " max " << glm::to_string(max) << std::endl;
+      helio_sprite sprite{.sprite_vertices = std::move(output_vertices)};
 
-      sprite.load_sprite_into_gl(vertices, indices);
-      gl_sprites.sprites.emplace_back(std::move(sprite));
-      
-      std::cout << "meshes " << scene->mNumMeshes << " vertices " << vertices.size() << " indices " << indices.size() << " min " << glm::to_string(min) << " max " << glm::to_string(max) << std::endl;
+      gl_sprites.sprites.emplace_back(std::move(sprite));      
       
     }
   }
