@@ -642,6 +642,15 @@ struct context {
       std::ofstream laser_gpio{option.as<std::string>()};
       laser_gpio << (laser_level ^ vm["gpio_off_value"].as<int>());
     }
+    
+    auto flame_effect_option = vm["trigger_flame_effect"];
+    if (!option.empty()) {
+       if (laser_level) {
+           system("curl http://192.168.1.20/fire &");
+       } else {
+           system("curl http://192.168.1.20/off &");
+       }
+    }
   }
 
   sequence_t start_sequence(decltype(sequence_to_status)::iterator const &i) {
