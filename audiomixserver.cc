@@ -278,6 +278,8 @@ struct helio_gl_rainbow {
   GLuint wobble_uniform_number;
   GLuint resolution_uniform_number;
   GLuint vertex_buffer_number;
+  GLuint fire_start_uniform_number;
+  float fire_start = 0;
 
   void init_rainbow() {
     clear_gl_errors();
@@ -298,6 +300,8 @@ struct helio_gl_rainbow {
         glGetUniformLocation(gl_program.gl_program_number, "wobble");
     resolution_uniform_number =
         glGetUniformLocation(gl_program.gl_program_number, "resolution");
+    fire_start_uniform_number =
+        glGetUniformLocation(gl_program.gl_program_number, "fire_start");
 
     glGenBuffers(1, &vertex_buffer_number);
     glBindBuffer(GL_ARRAY_BUFFER, vertex_buffer_number);
@@ -326,6 +330,12 @@ struct helio_gl_rainbow {
                           .count() *
                       0.001,
                   M_PI * 2));
+    glUniform1f(fire_start_uniform_number, fire_start);
+    fire_start *= .99;
+    if (fire_start < 0.001) {
+      fire_start = 0;
+    }
+
     glUniform3f(background_uniform_number, background_r, background_g,
                 background_b);
     glDrawArrays(GL_TRIANGLES, 0, 6);
@@ -366,7 +376,7 @@ struct helio_sprite {
 
 struct helio_gl_sprites {
   helio_gl_program gl_program;
-  std::vector<helio_sprite> sprites;
+  std::vector<helio_sprite> active_sprites;
   GLuint sprite_position_attrib_number;
   GLuint sprite_model_uniform_number;
   GLuint sprite_view_uniform_number;
@@ -393,27 +403,33 @@ struct helio_gl_sprites {
 
     clear_gl_errors();
 
-    for (auto &sprite : sprites) {
+    for (auto &sprite : active_sprites) {
       sprite.load_sprite_into_gl();
     }
     
     GLint gl_viewport_dimensions[4];
     glGetIntegerv(GL_VIEWPORT, gl_viewport_dimensions);
     display_ratio = gl_viewport_dimensions[2] / float(gl_viewport_dimensions[3]);
-
+    clear_gl_errors();
   }
 
   void render_sprites() {
     clear_gl_errors();
+    if (active_sprites.empty()) {
+      return;
+    }
+
     glUseProgram(gl_program.gl_program_number);
 
-    glm::mat4 model = glm::rotate(glm::mat4(1.0f),
-                        (float)std::fmod(std::chrono::duration_cast<std::chrono::milliseconds>(
-                                                                                        std::chrono::system_clock::now().time_since_epoch())
-                                  .count() *
-                                  0.001,
-                                  M_PI * 2), glm::vec3(-1.0f,-1.0f,1.0f));
-
+    glm::mat4 model = glm::rotate(
+                                  glm::mat4(1.0f),
+                                  (float)std::fmod(
+                                                   std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                                                                         std::chrono::system_clock::now().time_since_epoch())
+                                                   .count() *
+                                                   0.001,
+                                                   M_PI * 2),
+                                  glm::vec3(-1.0f,-1.0f,1.0f));
     
     glUniformMatrix4fv(sprite_model_uniform_number, 1, GL_FALSE,
                        glm::value_ptr(model));
@@ -421,7 +437,7 @@ struct helio_gl_sprites {
     glUniformMatrix4fv(sprite_view_uniform_number, 1, GL_FALSE,
                        glm::value_ptr(
                                       glm::lookAt(
-                                                  glm::vec3(200.0f,200.0f,200.0f),
+                                                  glm::vec3(30.0f,30.0f,30.0f),
                                                   glm::vec3(0,0,0),
                                                   glm::vec3(0,1,0)
                                                   ))
@@ -431,7 +447,7 @@ struct helio_gl_sprites {
                                                                                                       glm::radians(60.0f), 
                                                                                                       display_ratio,    
                                                                                                       0.1f,             
-                                                                                                      2000.0f          
+                                                                                                      1000.0f          
                                                                                                       )));
     unsigned unsigned_color = 0xff00ff;
     
@@ -441,8 +457,8 @@ struct helio_gl_sprites {
                 (0xff & (unsigned_color >> 0))/255.
                 );
     
-    for (auto &sprite: sprites) {
-      //      std::cout << "render_sprite " << glm::to_string(model) << " " << glm::to_string(model*glm::vec4(sprite.sprite_vertices[200], 1.0f)) << std::endl;
+    for (auto &sprite: active_sprites) {
+      //      std::cout << "render_sprite " << glm::to_string(model) << " " << glm::to_string(model*glm::vec4(sprite.sprite_vertices[200], 1.0f)) << " count " << sprite.sprite_vertices_count << std::endl;
       sprite.render_one_sprite(sprite_position_attrib_number);
     }
 
@@ -523,6 +539,8 @@ struct context {
   context(boost::program_options::variables_map &vm_)
       : vm(vm_), background_r(0), background_g(0), background_b(0) {}
 
+  context(const context&) = delete;
+
   Mix_Chunk *name_to_chunk(std::string const &name) {
     auto p = chunks.find(name);
 
@@ -560,6 +578,7 @@ struct context {
 
   sequence_t play_morse(std::string const &morse) {
     gl_lozenge.lozenge_message = morse;
+    gl_rainbow.fire_start = 1;
     
     auto dot = load_to_chunk("morse_dot.wav");
     auto dash = load_to_chunk("morse_dash.wav");
@@ -631,9 +650,12 @@ struct context {
   }
 
   void set_brightness(float brightness) {
-    background_r = brightness;
-    background_g = brightness;
-    background_b = brightness;
+
+    if (vm["flash_screen"].as<bool>()) {
+      background_r = brightness;
+      background_g = brightness;
+      background_b = brightness;
+    }
 
     auto laser_level = brightness > 0.5 ? 1 : 0;
 
@@ -1045,7 +1067,7 @@ struct context {
     glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
 
     gl_sprites.render_sprites();
-    gl_rainbow.render_rainbow(background_r, background_g, background_b);
+    //    gl_rainbow.render_rainbow(background_r, background_g, background_b);
     gl_lozenge.render_lozenges();
 
     glFinish();
@@ -1110,7 +1132,7 @@ struct context {
       std::cout << "meshes " << scene->mNumMeshes << " output_vertices " << output_vertices.size() << " min " << glm::to_string(min) << " max " << glm::to_string(max) << std::endl;
       helio_sprite sprite{.sprite_vertices = std::move(output_vertices)};
 
-      gl_sprites.sprites.emplace_back(std::move(sprite));      
+      gl_sprites.active_sprites.emplace_back(std::move(sprite));      
       
     }
   }
@@ -1150,8 +1172,10 @@ int main(int argc, char *argv[]) {
       "bind_port_udp", po::value<int>()->default_value(13231),
       "Port to listen on for UDP")("visuals",
                                    po::value<bool>()->default_value(true),
-                                   "Open GL visualisations")(
-                                                             "3d-model-paths", po::value<std::vector<std::string>>(), "paths to 3D model files");
+                                   "Open GL visualisations")
+                                   ("flash_screen",
+                                    po::value<bool>()->default_value(false), "Turn screen white when playing morse")
+    ("3d-model-paths", po::value<std::vector<std::string>>(), "paths to 3D model files");
 
   po::variables_map vm;
   po::positional_options_description p;
@@ -1184,6 +1208,10 @@ int main(int argc, char *argv[]) {
 
   context ctx(vm);
   Mix_AllocateChannels(vm["allocate_sdl_channels"].as<int>());
+
+  if (vm.count("3d-model-paths")) {
+    ctx.load_3d_models_from_paths(vm["3d-model-paths"].as<std::vector<std::string>>());
+  }
 
   if (vm["visuals"].as<bool>()) {
     ret = SDL_Init(SDL_INIT_VIDEO);
@@ -1238,10 +1266,6 @@ int main(int argc, char *argv[]) {
     ctx.load_audio_from_filenames(vm["sample-files"].as<std::vector<std::string>>());
   }
 
-  if (vm.count("3d-model-paths")) {
-    ctx.load_3d_models_from_paths(vm["3d-model-paths"].as<std::vector<std::string>>());
-  }
-  
   if (!event_init()) {
     std::cerr << "event_init" << std::endl;
     return 5;
