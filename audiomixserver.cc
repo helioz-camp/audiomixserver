@@ -427,7 +427,7 @@ struct helio_gl_sprites {
                                                    std::chrono::duration_cast<std::chrono::milliseconds>(
                                                                                                          std::chrono::system_clock::now().time_since_epoch())
                                                    .count() *
-                                                   0.001,
+                                                   0.0005,
                                                    M_PI * 2),
                                   glm::vec3(-1.0f,-1.0f,1.0f));
     
@@ -1067,7 +1067,7 @@ struct context {
     glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
 
     gl_sprites.render_sprites();
-    //    gl_rainbow.render_rainbow(background_r, background_g, background_b);
+    gl_rainbow.render_rainbow(background_r, background_g, background_b);
     gl_lozenge.render_lozenges();
 
     glFinish();
