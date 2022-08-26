@@ -53,6 +53,20 @@ std::unordered_map<char, std::string> const &character_to_morse{
     {'Z', "--.."},
 };
 
+void fire_server_http_request_done(struct evhttp_request * req, void *arg) {
+  if (!req) {
+    std::cerr << "fire_server_http_request_done failed" << std::endl;
+    return;
+  }
+
+  auto evbuf = evhttp_request_get_input_buffer(req);
+  auto len = evbuffer_get_length(evbuf);
+  std::cout << "fire_server_http_request_done " << evbuffer_pullup(evbuf, len) << std::endl;
+  
+  evbuffer_drain(evbuf, len);  
+}
+
+  
 void clear_gl_errors_helper(char const *function, int line) {
   auto err = glGetError();
 
@@ -519,6 +533,7 @@ struct context {
   std::vector<Mix_Chunk *> ordered_chunks;
   boost::program_options::variables_map &vm;
   struct event udp_event;
+  struct evhttp_connection* fire_server_connection;
 
   std::unordered_map<int, sequence_t> channel_to_sequence;
   std::unordered_map<sequence_t, sequence_status> sequence_to_status;
@@ -575,6 +590,7 @@ struct context {
   sequence_t play_morse(std::string const &morse) {
     gl_lozenge.lozenge_message = morse;
     gl_rainbow.fire_start = 1;
+    make_fire_server_request(vm["fire_server_start_path"].as<std::string>());
     
     auto dot = load_to_chunk("morse_dot.wav");
     auto dash = load_to_chunk("morse_dash.wav");
@@ -972,6 +988,22 @@ struct context {
     return true;
   }
 
+  void make_fire_server_request(std::string const &path) {
+    std::cout << "make_fire_server_request " << path << std::endl;
+    auto req = evhttp_request_new(fire_server_http_request_done, nullptr);
+    evhttp_make_request(fire_server_connection, req, EVHTTP_REQ_GET, path.c_str());
+  }
+
+  bool init_fire_server() {
+    fire_server_connection = evhttp_connection_new(
+                                                   vm["fire_server_address"].as<std::string>().c_str(),
+                                                   vm["fire_server_port"].as<int>());
+    evhttp_connection_set_timeout(fire_server_connection, 1);
+    make_fire_server_request("/");
+    
+    return fire_server_connection;
+  }
+
   bool init_udp() {
     // no cleanup, no need
     auto sock = socket(AF_INET, SOCK_DGRAM, 0);
@@ -1161,9 +1193,16 @@ int main(int argc, char *argv[]) {
       "gpio_off_value", po::value<int>()->default_value(1),
       "value for the GPIO pin when the laser is off")(
       "allocate_sdl_channels", po::value<int>()->default_value(2048),
-      "Number of SDL channels to mix together")(
+      "Number of SDL channels to mix together") (
       "bind_address", po::value<std::string>()->default_value("0.0.0.0"),
-      "Address to listen on for HTTP")("bind_port",
+      "Address to listen on for HTTP")
+    ("fire_server_address", po::value<std::string>()->default_value("192.168.1.20"),
+      "Address of the Pico W that starts the fire")
+    ("fire_server_port", po::value<int>()->default_value(80),
+      "HTTP port for the Pico W fire server")    
+    ("fire_server_start_path", po::value<std::string>()->default_value("fire"),
+      "Address of the Pico W that starts the fire")
+    ("bind_port",
                                        po::value<int>()->default_value(13231),
                                        "Port to listen on for HTTP")(
       "bind_port_udp", po::value<int>()->default_value(13231),
@@ -1273,6 +1312,9 @@ int main(int argc, char *argv[]) {
   }
   if (!ctx.init_http()) {
     std::cerr << "init_http" << std::endl;
+  }
+  if (!ctx.init_fire_server()) {
+    std::cerr << "init_fire_server" << std::endl;
   }
 
   auto libevent_thread = std::thread([] {
