@@ -331,10 +331,6 @@ struct helio_gl_rainbow {
                       0.001,
                   M_PI * 2));
     glUniform1f(fire_start_uniform_number, fire_start);
-    fire_start *= .99;
-    if (fire_start < 0.001) {
-      fire_start = 0;
-    }
 
     glUniform3f(background_uniform_number, background_r, background_g,
                 background_b);
@@ -1022,6 +1018,7 @@ struct context {
     if (!sequence) {
       return;
     }
+    gl_rainbow.fire_start = 0;
 
     auto i = sequence_to_status.find(sequence);
     if (i != sequence_to_status.end()) {

@@ -25,4 +25,4 @@ brew-install:
 
 # for Ubuntu/Debian
 apt-install:
-	apt install libevent-dev libboost-program-options-dev libsdl2-mixer-dev libglew-dev libsdl2-dev
+	apt install libevent-dev libboost-program-options-dev libsdl2-mixer-dev libglew-dev libsdl2-dev libglm-dev libassimp-dev
